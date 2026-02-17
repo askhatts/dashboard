@@ -82,7 +82,8 @@ format_period <- function(year, month) {
 #   xlab/ylab — подписи осей
 #   color_idx — индекс цвета из палитры CHART_LINE_COLORS
 create_time_series_chart <- function(data, title = NULL, xlab = "Период",
-                                     ylab = "Значение", color_idx = 1) {
+                                     ylab = "Значение", color_idx = 1,
+                                     source_id = NULL) {
   if (is.null(data) || nrow(data) == 0) {
     # Если данных нет — показываем плейсхолдер
     return(create_empty_chart("Нет данных для отображения"))
@@ -110,11 +111,12 @@ create_time_series_chart <- function(data, title = NULL, xlab = "Период",
       hovertemplate = paste0(
         "<b>%{x}</b><br>",
         "Значение: %{y:.1f}<extra></extra>"
-      )
+      ),
+      source = source_id
     )
   } else {
     # Несколько показателей — несколько линий с разными цветами
-    p <- plotly::plot_ly()
+    p <- plotly::plot_ly(source = source_id)
     for (i in seq_along(indicators)) {
       ind_data <- data %>% dplyr::filter(indicator == indicators[i])
       lc <- CHART_LINE_COLORS[((i - 1) %% length(CHART_LINE_COLORS)) + 1]

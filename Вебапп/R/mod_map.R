@@ -12,8 +12,9 @@
 #   - leafletProxy() для обновления слоёв без перерисовки карты
 #   - Клик по району → rv$selected_district_id
 #   - Клик по МО → rv$selected_mo_id
-#   - Легенды для обоих слоёв
-#   - Fullscreen-контроль
+#   - МО без данных скрининга НЕ отображаются на карте
+#   - При пустых данных слои и легенды корректно очищаются
+#   - Поддержка фильтрации по периоду (rv$selected_period_a/b)
 # ============================================================
 
 # === UI МОДУЛЯ ===
@@ -64,9 +65,19 @@ mod_map_server <- function(id, rv) {
         return(d)
       }
 
-      # Фильтруем по выбранному показателю и суммируем
-      epi_agg <- epi %>%
-        filter(indicator == rv$indicator_a) %>%
+      # Фильтруем по выбранному показателю
+      epi_filtered <- epi %>%
+        filter(indicator == rv$indicator_a)
+
+      # Если выбран конкретный период — фильтруем по нему
+      sel_period <- rv$selected_period_a
+      if (!is.null(sel_period)) {
+        epi_filtered <- epi_filtered %>%
+          filter(year == sel_period$year, month == sel_period$month)
+      }
+
+      # Суммируем по районам
+      epi_agg <- epi_filtered %>%
         group_by(district_id) %>%
         summarise(value = sum(value, na.rm = TRUE), .groups = "drop")
 
@@ -79,8 +90,8 @@ mod_map_server <- function(id, rv) {
     })
 
     # === РЕАКТИВНЫЕ ДАННЫЕ ДЛЯ КРУГОВ МО ===
-    # Вычисляет значения показателя Б для каждой МО,
-    # агрегируя данные скрининга.
+    # Вычисляет значения показателя Б для каждой МО.
+    # МО без данных скрининга НЕ отображаются (inner_join).
     mo_map_data <- reactive({
       req(rv$mo, rv$indicator_b)
 
@@ -90,22 +101,33 @@ mod_map_server <- function(id, rv) {
 
       scr <- rv$scr
 
+      # Если данных скрининга нет — не показываем МО вообще
       if (is.null(scr) || nrow(scr) == 0 || rv$indicator_b == "") {
-        m$value <- 0
-        m$radius <- MO_CIRCLE_SIZES[1]
-        return(m)
+        return(NULL)
       }
 
-      # Фильтруем по выбранному показателю и суммируем по МО
-      scr_agg <- scr %>%
-        filter(indicator == rv$indicator_b) %>%
-        group_by(mo_id) %>%
-        summarise(value = sum(value, na.rm = TRUE), .groups = "drop")
+      # Фильтруем по выбранному показателю
+      scr_filtered <- scr %>%
+        filter(indicator == rv$indicator_b)
 
-      # Присоединяем к данным МО
+      # Если выбран конкретный период — фильтруем по нему
+      sel_period <- rv$selected_period_b
+      if (!is.null(sel_period)) {
+        scr_filtered <- scr_filtered %>%
+          filter(year == sel_period$year, month == sel_period$month)
+      }
+
+      # Суммируем по МО
+      scr_agg <- scr_filtered %>%
+        group_by(mo_id) %>%
+        summarise(value = sum(value, na.rm = TRUE), .groups = "drop") %>%
+        filter(value > 0)  # Только МО с ненулевыми данными
+
+      if (nrow(scr_agg) == 0) return(NULL)
+
+      # inner_join — только МО с данными по выбранному показателю
       m <- m %>%
-        left_join(scr_agg, by = "mo_id") %>%
-        mutate(value = ifelse(is.na(value), 0, value))
+        inner_join(scr_agg, by = "mo_id")
 
       # Вычисляем квартили и размеры кругов
       breaks <- compute_quartile_breaks(m$value)
@@ -119,7 +141,14 @@ mod_map_server <- function(id, rv) {
     # Срабатывает при изменении показателя А или данных эпидемиологии
     observe({
       data <- districts_map_data()
-      if (is.null(data) || nrow(data) == 0) return()
+
+      # Если данных нет — очищаем слой и легенду
+      if (is.null(data) || nrow(data) == 0) {
+        leafletProxy(ns("map")) %>%
+          clearGroup("Районы") %>%
+          removeControl("legend_districts")
+        return()
+      }
 
       # Вычисляем квартильные границы для палитры
       breaks <- compute_quartile_breaks(data$value)
@@ -174,14 +203,27 @@ mod_map_server <- function(id, rv) {
     })
 
     # === ОБНОВЛЕНИЕ СЛОЯ МО (пропорциональные символы) ===
-    # Срабатывает при изменении показателя Б или данных скрининга
+    # Срабатывает при изменении показателя Б или данных скрининга.
+    # МО без данных скрининга НЕ отображаются.
     observe({
       data <- mo_map_data()
-      if (is.null(data) || nrow(data) == 0) return()
+
+      # Если данных нет — очищаем слой и легенду
+      if (is.null(data) || nrow(data) == 0) {
+        leafletProxy(ns("map")) %>%
+          clearGroup("Медорганизации") %>%
+          removeControl("legend_mo")
+        return()
+      }
 
       # Фильтруем МО без координат
       data <- data %>% filter(!is.na(latitude) & !is.na(longitude))
-      if (nrow(data) == 0) return()
+      if (nrow(data) == 0) {
+        leafletProxy(ns("map")) %>%
+          clearGroup("Медорганизации") %>%
+          removeControl("legend_mo")
+        return()
+      }
 
       # Формируем попапы
       popups <- paste0(
@@ -220,7 +262,7 @@ mod_map_server <- function(id, rv) {
         ) %>%
         addControl(
           html     = size_legend_html,
-          position = "bottomright",
+          position = "topright",
           layerId  = "legend_mo"
         )
     })

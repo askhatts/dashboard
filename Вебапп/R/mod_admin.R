@@ -2,29 +2,27 @@
 # МОДУЛЬ: АДМИН-ПАНЕЛЬ
 # ============================================================
 # Защищённая паролем панель для:
-#   1. Загрузки данных из Excel (эпидемиология, скрининг, координаты МО)
-#   2. Загрузки шейпфайлов районов
+#   1. Загрузки данных из Excel (по отдельности: эпид, скрининг, координаты, шейпфайл)
+#   2. Поддержка пациентского формата скрининга (per-patient → агрегация)
 #   3. Редактирования данных в табличном интерфейсе (inline)
 #   4. Сохранения изменений в .rds файлы
 #   5. Скачивания шаблонов Excel
+#   6. Справочник ID районов и МО
 # ============================================================
 
 # === UI МОДУЛЯ ===
 mod_admin_ui <- function(id) {
   ns <- NS(id)
 
-  # Скрытая панель (показывается после авторизации)
   hidden(
     div(id = ns("admin_panel"), class = "admin-overlay",
       div(class = "admin-content", style = "position: relative;",
-        # Кнопка закрытия
         actionButton(ns("close_admin"), label = NULL, icon = icon("times"),
                      class = "admin-close"),
 
         h3("Панель администратора",
            style = "color: #ffffff; margin-bottom: 16px;"),
 
-        # Вкладки
         tabsetPanel(
           id = ns("admin_tabs"),
           type = "pills",
@@ -35,8 +33,27 @@ mod_admin_ui <- function(id) {
             icon  = icon("upload"),
             div(style = "padding-top: 16px;",
 
+              # --- Справочник ID (сворачиваемый) ---
+              tags$details(style = "margin-bottom: 16px; border: 1px solid #30305a; border-radius: 6px; padding: 8px 12px;",
+                tags$summary(style = "color: #ffc107; cursor: pointer; font-weight: 600;",
+                  icon("info-circle"), " Справочник ID районов и медорганизаций"
+                ),
+                div(style = "margin-top: 12px;",
+                  fluidRow(
+                    column(6,
+                      h5("Районы", style = "color: #00d2ff;"),
+                      DTOutput(ns("ref_districts"))
+                    ),
+                    column(6,
+                      h5("Медорганизации", style = "color: #ff6b35;"),
+                      DTOutput(ns("ref_mo"))
+                    )
+                  )
+                )
+              ),
+
               fluidRow(
-                # Эпидемиология
+                # --- Эпидемиология ---
                 column(6,
                   h4("Эпидемиология", style = "color: #00d2ff;"),
                   p("Excel: Район | Год | Показатель1 | Показатель2 | ...",
@@ -49,59 +66,62 @@ mod_admin_ui <- function(id) {
                                            min = 2020, max = 2035)),
                     column(6, numericInput(ns("epi_month"), "Месяц (если нет):",
                                            value = NA, min = 1, max = 12))
-                  )
+                  ),
+                  actionButton(ns("btn_import_epi"), "Импортировать эпидемиологию",
+                               icon = icon("upload"), class = "btn-primary btn-sm",
+                               style = "margin-top: 4px;")
                 ),
 
-                # Скрининг
+                # --- Скрининг ---
                 column(6,
                   h4("Скрининг", style = "color: #ff6b35;"),
-                  p("Excel: МО | Год | Месяц | Показатель1 | Показатель2 | ...",
+                  p("Excel: МО | Год | Месяц | Показатели... ИЛИ пациентский формат (ФИО, ИИН, Дата_начала...)",
                     style = "color: #6c757d; font-size: 12px;"),
                   fileInput(ns("file_scr"), "Excel (скрининг):",
                             accept = c(".xlsx", ".xls")),
                   fluidRow(
-                    column(6, numericInput(ns("scr_year"), "Год (если нет в файле):",
+                    column(4, selectInput(ns("scr_type"), "Тип скрининга:",
+                                          choices = c("РМЖ" = "РМЖ", "КРР" = "КРР", "РШМ" = "РШМ", "Без префикса" = ""),
+                                          width = "100%")),
+                    column(4, numericInput(ns("scr_year"), "Год:",
                                            value = as.integer(format(Sys.Date(), "%Y")),
                                            min = 2020, max = 2035)),
-                    column(6, numericInput(ns("scr_month"), "Месяц (если нет):",
+                    column(4, numericInput(ns("scr_month"), "Месяц:",
                                            value = NA, min = 1, max = 12))
-                  )
+                  ),
+                  actionButton(ns("btn_import_scr"), "Импортировать скрининг",
+                               icon = icon("upload"), class = "btn-primary btn-sm",
+                               style = "margin-top: 4px;")
                 )
               ),
 
               tags$hr(style = "border-color: #30305a;"),
 
               fluidRow(
-                # Координаты МО
+                # --- Координаты МО ---
                 column(6,
                   h4("Координаты МО", style = "color: #00e676;"),
                   p("Excel: МО | Широта | Долгота",
                     style = "color: #6c757d; font-size: 12px;"),
                   fileInput(ns("file_mo_coords"), "Excel (координаты):",
-                            accept = c(".xlsx", ".xls"))
+                            accept = c(".xlsx", ".xls")),
+                  actionButton(ns("btn_import_coords"), "Импортировать координаты",
+                               icon = icon("upload"), class = "btn-primary btn-sm",
+                               style = "margin-top: 4px;")
                 ),
 
-                # Шейпфайл районов
+                # --- Шейпфайл ---
                 column(6,
                   h4("Шейпфайл районов", style = "color: #ffc107;"),
                   p("Загрузите все 5 файлов: .shp, .shx, .dbf, .prj, .cpg",
                     style = "color: #6c757d; font-size: 12px;"),
                   fileInput(ns("file_shapefile"), "Файлы шейпа:",
                             accept = c(".shp", ".shx", ".dbf", ".prj", ".cpg"),
-                            multiple = TRUE)
+                            multiple = TRUE),
+                  actionButton(ns("btn_import_shp"), "Импортировать шейпфайл",
+                               icon = icon("upload"), class = "btn-primary btn-sm",
+                               style = "margin-top: 4px;")
                 )
-              ),
-
-              tags$hr(style = "border-color: #30305a;"),
-
-              # Кнопка импорта
-              actionButton(ns("btn_import"), "Импортировать все загруженные файлы",
-                           icon = icon("upload"), class = "btn-primary btn-lg",
-                           style = "margin-top: 8px;"),
-
-              # Статус импорта
-              div(style = "margin-top: 12px;",
-                uiOutput(ns("import_status"))
               ),
 
               # Предпросмотр загруженных данных
@@ -131,10 +151,23 @@ mod_admin_ui <- function(id) {
 
               tags$hr(style = "border-color: #30305a;"),
 
-              # Кнопка сохранения
-              actionButton(ns("btn_save"), "Сохранить все изменения",
-                           icon = icon("save"), class = "btn-success btn-lg",
-                           style = "margin-top: 8px;")
+              fluidRow(
+                column(4,
+                  actionButton(ns("btn_save"), "Сохранить все изменения",
+                               icon = icon("save"), class = "btn-success btn-lg",
+                               style = "margin-top: 8px;")
+                ),
+                column(4,
+                  actionButton(ns("btn_clear_epi"), "Очистить эпидемиологию",
+                               icon = icon("trash"), class = "btn-danger btn-sm",
+                               style = "margin-top: 12px;")
+                ),
+                column(4,
+                  actionButton(ns("btn_clear_scr"), "Очистить скрининг",
+                               icon = icon("trash"), class = "btn-danger btn-sm",
+                               style = "margin-top: 12px;")
+                )
+              )
             )
           ),
 
@@ -149,31 +182,43 @@ mod_admin_ui <- function(id) {
 
               tags$br(),
               fluidRow(
-                column(4,
+                column(3,
                   div(class = "info-box", style = "text-align: center; padding: 20px;",
                     icon("table", style = "font-size: 24px; color: #00d2ff;"),
                     tags$br(), tags$br(),
                     strong("Эпидемиология", style = "color: #e0e0e0;"),
                     tags$br(),
-                    span("Район, Год, Показатели...", style = "color: #6c757d; font-size: 11px;"),
+                    span("Район, Год, Показатели", style = "color: #6c757d; font-size: 11px;"),
                     tags$br(), tags$br(),
                     downloadButton(ns("dl_tpl_epi"), "Скачать",
                                    class = "btn-download")
                   )
                 ),
-                column(4,
+                column(3,
                   div(class = "info-box", style = "text-align: center; padding: 20px;",
                     icon("hospital", style = "font-size: 24px; color: #ff6b35;"),
                     tags$br(), tags$br(),
-                    strong("Скрининг", style = "color: #e0e0e0;"),
+                    strong("Скрининг (агрег.)", style = "color: #e0e0e0;"),
                     tags$br(),
-                    span("МО, Год, Месяц, Показатели...", style = "color: #6c757d; font-size: 11px;"),
+                    span("МО, Год, Месяц, Показатели", style = "color: #6c757d; font-size: 11px;"),
                     tags$br(), tags$br(),
                     downloadButton(ns("dl_tpl_scr"), "Скачать",
                                    class = "btn-download")
                   )
                 ),
-                column(4,
+                column(3,
+                  div(class = "info-box", style = "text-align: center; padding: 20px;",
+                    icon("user", style = "font-size: 24px; color: #bb86fc;"),
+                    tags$br(), tags$br(),
+                    strong("Скрининг (пациент.)", style = "color: #e0e0e0;"),
+                    tags$br(),
+                    span("МО, ФИО, ИИН, Дата, Показатели", style = "color: #6c757d; font-size: 11px;"),
+                    tags$br(), tags$br(),
+                    downloadButton(ns("dl_tpl_scr_patient"), "Скачать",
+                                   class = "btn-download")
+                  )
+                ),
+                column(3,
                   div(class = "info-box", style = "text-align: center; padding: 20px;",
                     icon("map-marker-alt", style = "font-size: 24px; color: #00e676;"),
                     tags$br(), tags$br(),
@@ -199,17 +244,13 @@ mod_admin_server <- function(id, rv) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
 
-    # Флаг авторизации
     is_authorized <- reactiveVal(FALSE)
 
     # === АВТОРИЗАЦИЯ ===
-    # Показ модального окна при открытии админки
     observeEvent(rv$trigger_admin, {
       if (is_authorized()) {
-        # Если уже авторизован — просто показываем панель
-        shinyjs::show("admin_panel")
+        shinyjs::runjs(paste0("$('#", ns("admin_panel"), "').show();"))
       } else {
-        # Показываем модальное окно с паролем
         showModal(modalDialog(
           title = "Авторизация администратора",
           passwordInput(ns("admin_password"), "Введите пароль:"),
@@ -222,14 +263,12 @@ mod_admin_server <- function(id, rv) {
       }
     })
 
-    # Проверка пароля
     observeEvent(input$btn_login, {
       entered_hash <- digest::digest(input$admin_password, algo = "sha256")
-
       if (entered_hash == ADMIN_PASSWORD_HASH) {
         is_authorized(TRUE)
         removeModal()
-        shinyjs::show("admin_panel")
+        shinyjs::runjs(paste0("$('#", ns("admin_panel"), "').show();"))
         showNotification("Вход выполнен", type = "message", duration = 3)
       } else {
         showNotification("Неверный пароль!", type = "error", duration = 5)
@@ -238,57 +277,81 @@ mod_admin_server <- function(id, rv) {
 
     # Закрытие админ-панели
     observeEvent(input$close_admin, {
-      shinyjs::hide("admin_panel")
+      shinyjs::runjs(paste0("$('#", ns("admin_panel"), "').hide();"))
     })
 
-    # === ИМПОРТ ДАННЫХ ===
-    observeEvent(input$btn_import, {
-      imported <- list()
+    # === СПРАВОЧНЫЕ ТАБЛИЦЫ ===
+    output$ref_districts <- renderDT({
+      d <- rv$districts
+      if (is.null(d) || nrow(d) == 0) return(datatable(data.frame(`Нет данных` = ""), rownames = FALSE))
+      df <- st_drop_geometry(d)[, c("district_id", "district_pcode", "district_name_ru")]
+      datatable(df, options = list(pageLength = 10, scrollY = "200px", dom = "t"), rownames = FALSE,
+                colnames = c("ID", "PCODE", "Район"))
+    })
 
-      # --- Импорт эпидемиологии ---
-      if (!is.null(input$file_epi)) {
-        tryCatch({
-          raw <- read_excel(input$file_epi$datapath, guess_max = 5000)
+    output$ref_mo <- renderDT({
+      m <- rv$mo
+      if (is.null(m) || nrow(m) == 0) return(datatable(data.frame(`Нет данных` = ""), rownames = FALSE))
+      df <- m[, c("mo_id", "mo_short_name", "district_name_ru")]
+      datatable(df, options = list(pageLength = 10, scrollY = "200px", dom = "tp"), rownames = FALSE,
+                colnames = c("ID", "МО", "Район"))
+    })
 
-          # Конвертируем в длинный формат
-          long_data <- parse_excel_to_long_format(
-            data = raw,
-            entity_type    = "district",
-            reference_data = rv$districts,
-            year_override  = input$epi_year,
-            month_override = input$epi_month
+    # === ИМПОРТ ЭПИДЕМИОЛОГИИ ===
+    observeEvent(input$btn_import_epi, {
+      req(input$file_epi)
+      tryCatch({
+        raw <- readxl::read_excel(input$file_epi$datapath, guess_max = 5000)
+
+        long_data <- parse_excel_to_long_format(
+          data = raw,
+          entity_type    = "district",
+          reference_data = rv$districts,
+          year_override  = input$epi_year,
+          month_override = input$epi_month
+        )
+
+        existing <- rv$epi
+        max_id <- if (nrow(existing) > 0) max(existing$epi_id) else 0
+
+        new_epi <- long_data %>%
+          dplyr::filter(!is.na(entity_id)) %>%
+          dplyr::transmute(
+            epi_id      = seq(max_id + 1, max_id + dplyr::n()),
+            district_id = entity_id,
+            year        = year,
+            month       = month,
+            indicator   = indicator,
+            value       = value,
+            import_date = import_date
           )
 
-          # Присваиваем ID и переименовываем колонки
-          existing <- rv$epi
-          max_id <- if (nrow(existing) > 0) max(existing$epi_id) else 0
+        rv$epi <- dplyr::bind_rows(existing, new_epi)
+        save_epidemiology(rv$epi)
+        showNotification(paste0("Эпидемиология: импортировано ", nrow(new_epi), " записей"),
+                        type = "message", duration = 8)
+      }, error = function(e) {
+        showNotification(paste("Ошибка импорта эпидемиологии:", e$message),
+                        type = "error", duration = 10)
+      })
+    })
 
-          new_epi <- long_data %>%
-            filter(!is.na(entity_id)) %>%
-            transmute(
-              epi_id      = seq(max_id + 1, max_id + n()),
-              district_id = entity_id,
-              year        = year,
-              month       = month,
-              indicator   = indicator,
-              value       = value,
-              import_date = import_date
-            )
+    # === ИМПОРТ СКРИНИНГА ===
+    observeEvent(input$btn_import_scr, {
+      req(input$file_scr)
+      tryCatch({
+        raw <- readxl::read_excel(input$file_scr$datapath, guess_max = 10000)
 
-          rv$epi <- bind_rows(existing, new_epi)
-          save_epidemiology(rv$epi)
-          imported$epi <- nrow(new_epi)
-        }, error = function(e) {
-          showNotification(paste("Ошибка импорта эпидемиологии:", e$message),
-                          type = "error", duration = 10)
-        })
-      }
-
-      # --- Импорт скрининга ---
-      if (!is.null(input$file_scr)) {
-        tryCatch({
-          raw <- read_excel(input$file_scr$datapath, guess_max = 5000)
-
+        # Авто-определение формата: пациентский или агрегированный
+        if (is_patient_level_format(names(raw))) {
+          long_data <- parse_patient_level_screening(
+            data = raw,
+            reference_mo = rv$mo,
+            scr_type_prefix = input$scr_type,
+            year_override = input$scr_year,
+            month_override = input$scr_month
+          )
+        } else {
           long_data <- parse_excel_to_long_format(
             data = raw,
             entity_type    = "mo",
@@ -296,121 +359,124 @@ mod_admin_server <- function(id, rv) {
             year_override  = input$scr_year,
             month_override = input$scr_month
           )
+        }
 
-          existing <- rv$scr
-          max_id <- if (nrow(existing) > 0) max(existing$scr_id) else 0
+        existing <- rv$scr
+        max_id <- if (nrow(existing) > 0) max(existing$scr_id) else 0
 
-          new_scr <- long_data %>%
-            filter(!is.na(entity_id)) %>%
-            transmute(
-              scr_id      = seq(max_id + 1, max_id + n()),
-              mo_id       = entity_id,
-              year        = year,
-              month       = month,
-              indicator   = indicator,
-              value       = value,
-              import_date = import_date
-            )
+        new_scr <- long_data %>%
+          dplyr::filter(!is.na(entity_id)) %>%
+          dplyr::transmute(
+            scr_id      = seq(max_id + 1, max_id + dplyr::n()),
+            mo_id       = entity_id,
+            year        = year,
+            month       = month,
+            indicator   = indicator,
+            value       = value,
+            import_date = import_date
+          )
 
-          rv$scr <- bind_rows(existing, new_scr)
-          save_screening(rv$scr)
-          imported$scr <- nrow(new_scr)
-        }, error = function(e) {
-          showNotification(paste("Ошибка импорта скрининга:", e$message),
-                          type = "error", duration = 10)
-        })
-      }
+        rv$scr <- dplyr::bind_rows(existing, new_scr)
+        save_screening(rv$scr)
+        showNotification(paste0("Скрининг: импортировано ", nrow(new_scr), " записей"),
+                        type = "message", duration = 8)
+      }, error = function(e) {
+        showNotification(paste("Ошибка импорта скрининга:", e$message),
+                        type = "error", duration = 10)
+      })
+    })
 
-      # --- Импорт координат МО ---
-      if (!is.null(input$file_mo_coords)) {
-        tryCatch({
-          raw <- read_excel(input$file_mo_coords$datapath)
-          detected <- auto_detect_columns(names(raw), "mo")
+    # === ИМПОРТ КООРДИНАТ МО ===
+    observeEvent(input$btn_import_coords, {
+      req(input$file_mo_coords)
+      tryCatch({
+        raw <- readxl::read_excel(input$file_mo_coords$datapath)
+        detected <- auto_detect_columns(names(raw), "mo")
 
-          if (!is.null(detected$entity_col) && !is.null(detected$lat_col) && !is.null(detected$lon_col)) {
-            mo_current <- rv$mo
-            matches <- match_mo_names(as.character(raw[[detected$entity_col]]), mo_current)
-            updated <- 0
+        if (!is.null(detected$entity_col) && !is.null(detected$lat_col) && !is.null(detected$lon_col)) {
+          mo_current <- rv$mo
+          matches <- match_mo_names(as.character(raw[[detected$entity_col]]), mo_current)
+          updated <- 0
 
-            for (j in 1:nrow(raw)) {
-              if (is.na(matches$matched_mo_id[j])) next
-              lat <- suppressWarnings(as.numeric(raw[[detected$lat_col]][j]))
-              lon <- suppressWarnings(as.numeric(raw[[detected$lon_col]][j]))
-              if (is.na(lat) || is.na(lon)) next
+          for (j in 1:nrow(raw)) {
+            if (is.na(matches$matched_mo_id[j])) next
+            lat <- suppressWarnings(as.numeric(raw[[detected$lat_col]][j]))
+            lon <- suppressWarnings(as.numeric(raw[[detected$lon_col]][j]))
+            if (is.na(lat) || is.na(lon)) next
 
-              idx <- which(mo_current$mo_id == matches$matched_mo_id[j])
-              if (length(idx) > 0) {
-                mo_current$latitude[idx]  <- lat
-                mo_current$longitude[idx] <- lon
-                updated <- updated + 1
-              }
+            idx <- which(mo_current$mo_id == matches$matched_mo_id[j])
+            if (length(idx) > 0) {
+              mo_current$latitude[idx]  <- lat
+              mo_current$longitude[idx] <- lon
+              updated <- updated + 1
             }
-
-            rv$mo <- mo_current
-            save_mo(rv$mo)
-            imported$coords <- updated
-          }
-        }, error = function(e) {
-          showNotification(paste("Ошибка импорта координат:", e$message),
-                          type = "error", duration = 10)
-        })
-      }
-
-      # --- Импорт шейпфайла ---
-      if (!is.null(input$file_shapefile)) {
-        tryCatch({
-          # Копируем все загруженные файлы во временную директорию
-          tmpdir <- tempdir()
-          files <- input$file_shapefile
-          shp_file <- NULL
-
-          for (k in 1:nrow(files)) {
-            ext <- tools::file_ext(files$name[k])
-            new_path <- file.path(tmpdir, files$name[k])
-            file.copy(files$datapath[k], new_path, overwrite = TRUE)
-            if (ext == "shp") shp_file <- new_path
           }
 
-          if (!is.null(shp_file)) {
-            shp_data <- st_read(shp_file, quiet = TRUE)
-            # Фильтруем Абайскую область
-            abai <- shp_data %>%
-              filter(ADM1_EN == "Abay Region") %>%
-              st_transform(4326)
+          rv$mo <- mo_current
+          save_mo(rv$mo)
+          showNotification(paste0("Координаты: обновлено ", updated, " МО"),
+                          type = "message", duration = 8)
+        } else {
+          showNotification("Не найдены необходимые колонки (МО, Широта, Долгота)",
+                          type = "error", duration = 8)
+        }
+      }, error = function(e) {
+        showNotification(paste("Ошибка импорта координат:", e$message),
+                        type = "error", duration = 10)
+      })
+    })
 
-            if (nrow(abai) > 0) {
-              # Обновляем районы (сохраняя существующие ID)
-              # Простая замена геометрии для существующих
-              rv$districts <- st_sf(
-                rv$districts %>% st_drop_geometry(),
+    # === ИМПОРТ ШЕЙПФАЙЛА ===
+    observeEvent(input$btn_import_shp, {
+      req(input$file_shapefile)
+      tryCatch({
+        tmpdir <- tempdir()
+        files <- input$file_shapefile
+        shp_file <- NULL
+
+        for (k in 1:nrow(files)) {
+          ext <- tools::file_ext(files$name[k])
+          new_path <- file.path(tmpdir, files$name[k])
+          file.copy(files$datapath[k], new_path, overwrite = TRUE)
+          if (ext == "shp") shp_file <- new_path
+        }
+
+        if (!is.null(shp_file)) {
+          shp_data <- sf::st_read(shp_file, quiet = TRUE)
+          abai <- shp_data %>%
+            dplyr::filter(ADM1_EN == "Abay Region") %>%
+            sf::st_transform(4326)
+
+          if (nrow(abai) > 0) {
+            current <- rv$districts
+            # Сопоставляем по PCODE если есть
+            if ("ADM2_PCODE" %in% names(abai) && "district_pcode" %in% names(current)) {
+              for (j in 1:nrow(abai)) {
+                idx <- which(current$district_pcode == abai$ADM2_PCODE[j])
+                if (length(idx) > 0) {
+                  sf::st_geometry(current)[idx] <- abai$geometry[j]
+                }
+              }
+            } else {
+              current <- sf::st_sf(
+                current %>% sf::st_drop_geometry(),
                 geometry = abai$geometry,
                 crs = 4326
               )
-              save_districts(rv$districts)
-              imported$shp <- nrow(abai)
             }
+            rv$districts <- current
+            save_districts(rv$districts)
+            showNotification(paste0("Шейпфайл: обновлено ", nrow(abai), " районов"),
+                            type = "message", duration = 8)
           }
-        }, error = function(e) {
-          showNotification(paste("Ошибка импорта шейпфайла:", e$message),
-                          type = "error", duration = 10)
-        })
-      }
-
-      # Итоговое уведомление
-      if (length(imported) > 0) {
-        msgs <- c()
-        if (!is.null(imported$epi))    msgs <- c(msgs, paste0("Эпидемиология: ", imported$epi, " записей"))
-        if (!is.null(imported$scr))    msgs <- c(msgs, paste0("Скрининг: ", imported$scr, " записей"))
-        if (!is.null(imported$coords)) msgs <- c(msgs, paste0("Координаты: ", imported$coords, " МО"))
-        if (!is.null(imported$shp))    msgs <- c(msgs, paste0("Шейпфайл: ", imported$shp, " районов"))
-        showNotification(paste("Импорт завершён:\n", paste(msgs, collapse = "\n")),
-                        type = "message", duration = 10)
-      } else {
-        showNotification("Нет файлов для импорта", type = "warning", duration = 5)
-      }
+        }
+      }, error = function(e) {
+        showNotification(paste("Ошибка импорта шейпфайла:", e$message),
+                        type = "error", duration = 10)
+      })
     })
 
-    # === ПРЕДПРОСМОТР ЗАГРУЖЕННЫХ ФАЙЛОВ ===
+    # === ПРЕДПРОСМОТР ===
     output$preview_ui <- renderUI({
       if (!is.null(input$file_epi) || !is.null(input$file_scr)) {
         tagList(
@@ -421,60 +487,35 @@ mod_admin_server <- function(id, rv) {
     })
 
     output$preview_table <- renderDT({
-      # Показываем последний загруженный файл
       if (!is.null(input$file_scr)) {
-        data <- tryCatch(read_excel(input$file_scr$datapath, n_max = 50), error = function(e) NULL)
+        data <- tryCatch(readxl::read_excel(input$file_scr$datapath, n_max = 50), error = function(e) NULL)
       } else if (!is.null(input$file_epi)) {
-        data <- tryCatch(read_excel(input$file_epi$datapath, n_max = 50), error = function(e) NULL)
+        data <- tryCatch(readxl::read_excel(input$file_epi$datapath, n_max = 50), error = function(e) NULL)
       } else {
         data <- NULL
       }
 
       if (is.null(data)) return(datatable(data.frame(`Файл не загружен` = ""), rownames = FALSE))
-
       datatable(data, options = list(scrollX = TRUE, pageLength = 10), rownames = FALSE)
     })
 
-    # === СТАТУС ИМПОРТА ===
-    output$import_status <- renderUI({
-      files_loaded <- c()
-      if (!is.null(input$file_epi))       files_loaded <- c(files_loaded, "Эпидемиология")
-      if (!is.null(input$file_scr))       files_loaded <- c(files_loaded, "Скрининг")
-      if (!is.null(input$file_mo_coords)) files_loaded <- c(files_loaded, "Координаты МО")
-      if (!is.null(input$file_shapefile)) files_loaded <- c(files_loaded, "Шейпфайл")
-
-      if (length(files_loaded) == 0) {
-        div(style = "color: #6c757d;", "Файлы не загружены")
-      } else {
-        div(style = "color: #00e676;",
-            icon("check-circle"),
-            paste("Готовы к импорту:", paste(files_loaded, collapse = ", ")))
-      }
-    })
-
     # === РЕДАКТИРУЕМЫЕ ТАБЛИЦЫ ===
-
-    # Эпидемиология
     output$table_epi_edit <- renderDT({
       data <- rv$epi
       if (is.null(data) || nrow(data) == 0) {
         return(datatable(data.frame(`Нет данных` = ""), rownames = FALSE))
       }
-      # Показываем последние 100 записей для производительности
       data_display <- tail(data, 100)
-      datatable(
-        data_display,
+      datatable(data_display,
         editable = list(target = "cell", disable = list(columns = c(0))),
         options  = list(scrollX = TRUE, pageLength = 10),
         rownames = FALSE
       )
     })
 
-    # Обработка редактирования эпидемиологии
     observeEvent(input$table_epi_edit_cell_edit, {
       info <- input$table_epi_edit_cell_edit
       epi <- rv$epi
-      # Вычисляем реальный индекс (т.к. показываем tail)
       n <- nrow(epi)
       display_n <- min(n, 100)
       real_row <- n - display_n + info$row
@@ -484,15 +525,13 @@ mod_admin_server <- function(id, rv) {
       }
     })
 
-    # Скрининг
     output$table_scr_edit <- renderDT({
       data <- rv$scr
       if (is.null(data) || nrow(data) == 0) {
         return(datatable(data.frame(`Нет данных` = ""), rownames = FALSE))
       }
       data_display <- tail(data, 100)
-      datatable(
-        data_display,
+      datatable(data_display,
         editable = list(target = "cell", disable = list(columns = c(0))),
         options  = list(scrollX = TRUE, pageLength = 10),
         rownames = FALSE
@@ -511,14 +550,12 @@ mod_admin_server <- function(id, rv) {
       }
     })
 
-    # МО
     output$table_mo_edit <- renderDT({
       data <- rv$mo
       if (is.null(data) || nrow(data) == 0) {
         return(datatable(data.frame(`Нет данных` = ""), rownames = FALSE))
       }
-      datatable(
-        data,
+      datatable(data,
         editable = list(target = "cell", disable = list(columns = c(0))),
         options  = list(scrollX = TRUE, pageLength = 15),
         rownames = FALSE
@@ -534,7 +571,7 @@ mod_admin_server <- function(id, rv) {
       }
     })
 
-    # === СОХРАНЕНИЕ ВСЕХ ИЗМЕНЕНИЙ ===
+    # === СОХРАНЕНИЕ ===
     observeEvent(input$btn_save, {
       tryCatch({
         save_epidemiology(rv$epi)
@@ -547,9 +584,20 @@ mod_admin_server <- function(id, rv) {
       })
     })
 
-    # === ШАБЛОНЫ ДЛЯ СКАЧИВАНИЯ ===
+    # === ОЧИСТКА ДАННЫХ ===
+    observeEvent(input$btn_clear_epi, {
+      rv$epi <- create_empty_epidemiology()
+      save_epidemiology(rv$epi)
+      showNotification("Данные эпидемиологии очищены", type = "warning", duration = 5)
+    })
 
-    # Шаблон эпидемиологии
+    observeEvent(input$btn_clear_scr, {
+      rv$scr <- create_empty_screening()
+      save_screening(rv$scr)
+      showNotification("Данные скрининга очищены", type = "warning", duration = 5)
+    })
+
+    # === ШАБЛОНЫ ===
     output$dl_tpl_epi <- downloadHandler(
       filename = function() "template_epidemiology.xlsx",
       content  = function(file) {
@@ -563,11 +611,10 @@ mod_admin_server <- function(id, rv) {
           `5-лет. выживаемость (%)` = c(62.4, 58.1, 60.2),
           check.names = FALSE
         )
-        write_xlsx(tpl, file)
+        writexl::write_xlsx(tpl, file)
       }
     )
 
-    # Шаблон скрининга
     output$dl_tpl_scr <- downloadHandler(
       filename = function() "template_screening.xlsx",
       content  = function(file) {
@@ -583,11 +630,31 @@ mod_admin_server <- function(id, rv) {
           `КРР - Рак выявлен`  = c(4, 3),
           check.names = FALSE
         )
-        write_xlsx(tpl, file)
+        writexl::write_xlsx(tpl, file)
       }
     )
 
-    # Шаблон координат
+    output$dl_tpl_scr_patient <- downloadHandler(
+      filename = function() "template_screening_patient.xlsx",
+      content  = function(file) {
+        tpl <- data.frame(
+          `МО_начавшая_осмотр` = c("КГП на ПХВ 'Поликлиника №1 г. Семей' УЗ ОА"),
+          `Участок_прикрепления` = c("Участок 1"),
+          `ФИО` = c("Иванова А.Б."),
+          `ИИН` = c("800101123456"),
+          `Пол` = c("Ж"),
+          `Возраст` = c(44),
+          `Дата_начала` = c("2024-03-15"),
+          `Требует_вмешательства` = c(0),
+          `Дата_окончания` = c("2024-03-20"),
+          `Рак_молочной_железы` = c(0),
+          `Трепанобиопсия_всего` = c(1),
+          check.names = FALSE
+        )
+        writexl::write_xlsx(tpl, file)
+      }
+    )
+
     output$dl_tpl_coords <- downloadHandler(
       filename = function() "template_mo_coords.xlsx",
       content  = function(file) {
@@ -598,7 +665,7 @@ mod_admin_server <- function(id, rv) {
           `Долгота` = c(80.2442, 80.2615),
           check.names = FALSE
         )
-        write_xlsx(tpl, file)
+        writexl::write_xlsx(tpl, file)
       }
     )
 

@@ -44,7 +44,14 @@ compute_quartile_breaks <- function(values) {
   }
 
   # Стандартный случай: квантили
-  as.numeric(quantile(valid, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE))
+  breaks <- as.numeric(quantile(valid, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE))
+
+  # Если квантили дали дубли (кластеризованные данные) — переходим на равные интервалы
+  if (length(unique(breaks)) < 5) {
+    breaks <- seq(min(valid), max(valid), length.out = 5)
+  }
+
+  breaks
 }
 
 # === ПРИСВОЕНИЕ КВАРТИЛЬНОГО КЛАССА ===

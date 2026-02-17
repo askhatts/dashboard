@@ -1,11 +1,11 @@
 # ============================================================
-# МОДУЛЬ: ПАНЕЛЬ УПРАВЛЕНИЯ (Селекторы индикаторов)
+# МОДУЛЬ: ПАНЕЛЬ УПРАВЛЕНИЯ (Селекторы индикаторов + KPI)
 # ============================================================
-# Содержит два выпадающих списка:
+# Содержит:
+#   - Динамические KPI-карточки (средние эпид. показатели региона)
 #   - Показатель А: Эпидемиология (для окраски районов)
 #   - Показатель Б: Скрининги (для размера кругов МО)
-# Списки заполняются ДИНАМИЧЕСКИ из загруженных данных.
-# Также показывает информационные карточки (KPI).
+#   - Информация о выбранных объектах
 # ============================================================
 
 # === UI МОДУЛЯ ===
@@ -16,16 +16,36 @@ mod_controls_ui <- function(id) {
     # Заголовок секции
     h4("Показатели"),
 
-    # Информационные карточки (KPI)
+    # Динамические KPI-карточки (средние по региону)
     div(class = "info-box",
-      div(class = "info-label", "Районов"),
-      textOutput(ns("kpi_districts"), inline = TRUE) %>%
+      div(class = "info-label", "Заболеваемость"),
+      textOutput(ns("kpi_incidence"), inline = TRUE) %>%
         tagAppendAttributes(class = "info-value")
     ),
     div(class = "info-box",
-      div(class = "info-label", "Медорганизаций"),
-      textOutput(ns("kpi_mo"), inline = TRUE) %>%
+      div(class = "info-label", "Смертность"),
+      textOutput(ns("kpi_mortality"), inline = TRUE) %>%
         tagAppendAttributes(class = "info-value")
+    ),
+    div(class = "info-box",
+      div(class = "info-label", "Ранняя диагн. %"),
+      textOutput(ns("kpi_early_diag"), inline = TRUE) %>%
+        tagAppendAttributes(class = "info-value")
+    ),
+    div(class = "info-box",
+      div(class = "info-label", "Запущенность %"),
+      textOutput(ns("kpi_advanced"), inline = TRUE) %>%
+        tagAppendAttributes(class = "info-value")
+    ),
+    div(class = "info-box",
+      div(class = "info-label", "5-лет. выжив. %"),
+      textOutput(ns("kpi_survival"), inline = TRUE) %>%
+        tagAppendAttributes(class = "info-value")
+    ),
+    div(class = "info-box",
+      div(class = "info-label", "Смерт./Забол. %"),
+      textOutput(ns("kpi_mort_inc_ratio"), inline = TRUE) %>%
+        tagAppendAttributes(class = "info-value", style = "color: #ffc107;")
     ),
 
     tags$hr(style = "border-color: #30305a;"),
@@ -78,21 +98,44 @@ mod_controls_ui <- function(id) {
 }
 
 # === SERVER МОДУЛЯ ===
-# Принимает общий reactiveValues (rv), обновляет списки показателей
-# и записывает выбранные значения обратно в rv.
 mod_controls_server <- function(id, rv) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
 
+    # === УТИЛИТА: Средний показатель по региону ===
+    # Ищет показатель по паттерну в названии, считает среднее по районам
+    avg_epi_indicator <- function(pattern) {
+      epi <- rv$epi
+      if (is.null(epi) || nrow(epi) == 0) return(NA_real_)
+
+      indicators <- unique(epi$indicator)
+      matched <- indicators[grepl(pattern, indicators, ignore.case = TRUE)]
+      if (length(matched) == 0) return(NA_real_)
+
+      # Берём последний период (максимальный год/месяц)
+      target <- epi %>%
+        filter(indicator == matched[1])
+
+      if (nrow(target) == 0) return(NA_real_)
+
+      # Среднее по районам (последний доступный период)
+      latest <- target %>%
+        filter(year == max(year, na.rm = TRUE))
+      if (any(!is.na(latest$month))) {
+        latest <- latest %>% filter(month == max(month, na.rm = TRUE))
+      }
+
+      mean(latest$value, na.rm = TRUE)
+    }
+
     # --- Обновление списка показателей А (эпидемиология) ---
-    # Срабатывает при изменении данных эпидемиологии (напр. после импорта)
     observe({
       epi <- rv$epi
       if (is.null(epi) || nrow(epi) == 0) {
         choices_a <- c("Нет данных" = "")
       } else {
-        # Извлекаем уникальные названия показателей
         indicators <- sort(unique(epi$indicator))
+        # Добавляем вычисляемый показатель "Смертность/Заболеваемость"
         choices_a <- setNames(indicators, indicators)
       }
 
@@ -117,7 +160,6 @@ mod_controls_server <- function(id, rv) {
     })
 
     # --- Записываем выбранные индикаторы в общий rv ---
-    # Чтобы другие модули (карта, графики) могли реагировать на изменения
     observe({
       rv$indicator_a <- input$indicator_a
     })
@@ -126,13 +168,37 @@ mod_controls_server <- function(id, rv) {
       rv$indicator_b <- input$indicator_b
     })
 
-    # --- KPI карточки ---
-    output$kpi_districts <- renderText({
-      if (!is.null(rv$districts)) nrow(rv$districts) else "0"
+    # --- Динамические KPI карточки (средние по региону) ---
+    format_kpi <- function(val) {
+      if (is.na(val) || is.null(val)) return("\u2014")
+      round(val, 1)
+    }
+
+    output$kpi_incidence <- renderText({
+      format_kpi(avg_epi_indicator("заболеваемость"))
     })
 
-    output$kpi_mo <- renderText({
-      if (!is.null(rv$mo)) nrow(rv$mo) else "0"
+    output$kpi_mortality <- renderText({
+      format_kpi(avg_epi_indicator("смертность"))
+    })
+
+    output$kpi_early_diag <- renderText({
+      format_kpi(avg_epi_indicator("ранняя диагностика|ранняя_диагностика"))
+    })
+
+    output$kpi_advanced <- renderText({
+      format_kpi(avg_epi_indicator("запущенность"))
+    })
+
+    output$kpi_survival <- renderText({
+      format_kpi(avg_epi_indicator("выживаемость"))
+    })
+
+    output$kpi_mort_inc_ratio <- renderText({
+      mort <- avg_epi_indicator("смертность")
+      inc  <- avg_epi_indicator("заболеваемость")
+      if (is.na(mort) || is.na(inc) || inc == 0) return("\u2014")
+      format_kpi(mort / inc * 100)
     })
 
     # --- Названия выбранных объектов ---

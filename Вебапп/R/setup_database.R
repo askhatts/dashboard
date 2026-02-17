@@ -1,12 +1,12 @@
 # ============================================================
 # ИНИЦИАЛИЗАЦИЯ ДАННЫХ ИЗ ШЕЙПФАЙЛОВ
-# Версия: 3.0 (полная переработка)
+# Версия: 4.0 (реальные координаты МО, PCODEs районов)
 # ============================================================
 # Этот скрипт запускается ОДИН РАЗ для создания .rds файлов
 # из шейпфайлов и встроенного списка медорганизаций.
 # После выполнения в data/ появятся:
-#   districts.rds  — sf-объект районов Абайской области
-#   mo.rds         — data.frame МО с координатами
+#   districts.rds  — sf-объект районов Абайской области (с PCODE)
+#   mo.rds         — data.frame МО с реальными GPS координатами
 #   epidemiology.rds — пустая таблица эпидемиологии (длинный формат)
 #   screening.rds  — пустая таблица скрининга (длинный формат)
 # ============================================================
@@ -15,8 +15,6 @@ library(sf)
 library(dplyr)
 
 # === ФУНКЦИЯ: Нормализация названий МО ===
-# Убираем все небуквенно-цифровые символы и приводим к нижнему регистру.
-# Используется для нечёткого сопоставления при импорте Excel.
 normalize_name <- function(name) {
   tolower(gsub("[^[:alnum:]]", "", as.character(name)))
 }
@@ -31,9 +29,7 @@ setup_data <- function(
   cat("  ИНИЦИАЛИЗАЦИЯ ДАННЫХ — Онкологическая аналитика Абайской области\n")
   cat(strrep("=", 70), "\n\n")
 
-  # Создаём выходные директории
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-  dir.create(file.path(output_dir, "templates"), showWarnings = FALSE, recursive = TRUE)
 
   # --- 1. ЗАГРУЗКА И ФИЛЬТРАЦИЯ ШЕЙПФАЙЛА ---
   cat("1. Загрузка шейпфайла...\n")
@@ -47,10 +43,9 @@ setup_data <- function(
   shp_all <- st_read(shapefile_path, quiet = TRUE)
   cat("   Прочитано", nrow(shp_all), "полигонов Казахстана\n")
 
-  # Фильтруем только Абайскую область
   abai_districts <- shp_all %>%
     filter(ADM1_EN == "Abay Region") %>%
-    st_transform(4326)  # Приводим к WGS84 для leaflet
+    st_transform(4326)
 
   cat("   Найдено", nrow(abai_districts), "районов Абайской области\n\n")
 
@@ -59,7 +54,6 @@ setup_data <- function(
   }
 
   # --- 2. МАППИНГ РУССКИХ НАЗВАНИЙ РАЙОНОВ ---
-  # Словарь перевода названий из шейпфайла (англ.) → русские
   district_names_ru <- c(
     "Semey"               = "Семей",
     "Abay District"       = "Абайский район",
@@ -81,34 +75,33 @@ setup_data <- function(
   for (i in 1:nrow(abai_districts)) {
     row <- abai_districts[i, ]
 
-    # Русское название (из маппинга или оригинальное, если не найдено)
     name_ru <- district_names_ru[row$ADM2_EN]
     if (is.na(name_ru)) name_ru <- row$ADM2_EN
 
-    # Тип: район или город
     dtype <- ifelse(grepl("District", row$ADM2_EN), "район", "город")
 
-    # Площадь в км2 — пересчитываем в метрическую проекцию UTM 43N
+    # PCODE из шейпфайла (стабильный уникальный ID)
+    pcode <- if ("ADM2_PCODE" %in% names(row)) as.character(row$ADM2_PCODE) else paste0("KAZ_", sprintf("%03d", i))
+
     row_metric <- st_transform(row, 32643)
     area_km2 <- as.numeric(st_area(row_metric)) / 1e6
 
-    # Центроид (для начальных координат МО)
     centroid <- st_centroid(row$geometry)
     coords <- st_coordinates(centroid)
 
     districts_list[[i]] <- data.frame(
-      district_id    = i,
+      district_id      = i,
+      district_pcode   = pcode,
       district_name_ru = as.character(name_ru),
       district_name_en = as.character(row$ADM2_EN),
-      district_type  = dtype,
-      area_km2       = round(area_km2, 2),
-      centroid_lat   = coords[2],
-      centroid_lon   = coords[1],
+      district_type    = dtype,
+      area_km2         = round(area_km2, 2),
+      centroid_lat     = coords[2],
+      centroid_lon     = coords[1],
       stringsAsFactors = FALSE
     )
   }
 
-  # Собираем data.frame и присоединяем геометрию
   districts_df <- do.call(rbind, districts_list)
   districts_sf <- st_sf(
     districts_df,
@@ -121,7 +114,8 @@ setup_data <- function(
   # --- 4. ФОРМИРОВАНИЕ СПИСКА МЕДОРГАНИЗАЦИЙ ---
   cat("3. Формирование списка медорганизаций...\n")
 
-  # Встроенный перечень 30 МО Абайской области с привязкой к районам (англ. название)
+  # Встроенный перечень 30 МО с реальными GPS координатами
+  # Координаты из открытых данных (2GIS, Yandex Maps)
   mo_raw <- data.frame(
     district_en = c(
       rep("Semey", 16),
@@ -167,31 +161,84 @@ setup_data <- function(
       "КГП на ПХВ 'МЦРБ Аягозского района' УЗ ОА",
       "Учреждение 'Казыгул'"
     ),
+    real_lat = c(
+      50.435000,   # ЦПМСП №12
+      50.419746,   # Поликлиника №1
+      51.122560,   # Поликлиника №2
+      50.430385,   # Поликлиника №4
+      50.406912,   # Поликлиника №7
+      50.391138,   # Поликлиника №9
+      50.382218,   # ЦПМСП №10
+      50.390807,   # Шульбинская ВА
+      50.390489,   # МУ Победа
+      50.461134,   # Поликлиника №8
+      50.244000,   # Центральная смотровая поликлиника
+      50.415431,   # Жан-Ер
+      50.428204,   # IV Plus
+      50.424690,   # Поликлиника №6
+      50.393667,   # Железнодорожная больница
+      50.401112,   # Әділ-Ем
+      48.943634,   # Абайская районная больница
+      49.199488,   # Абралинская больница
+      47.766925,   # Аксуатская ЦРБ
+      50.873300,   # Бескарагайская ЦРБ
+      47.472600,   # Больница района Мақаншы
+      47.080264,   # МЦРБ Урджарского района
+      50.686882,   # Бородулихинская ЦРБ
+      49.336640,   # Жарминская ЦРБ
+      49.572845,   # Шарская горбольница
+      49.336640,   # Амбулатория Азат (Калбатау)
+      48.747806,   # Кокпектинская ЦРБ
+      50.452200,   # Курчатовская горбольница
+      47.970610,   # МЦРБ Аягозского района
+      47.968825    # Казыгул
+    ),
+    real_lon = c(
+      80.275000,   # ЦПМСП №12
+      80.256558,   # Поликлиника №1
+      71.485110,   # Поликлиника №2
+      80.229671,   # Поликлиника №4
+      80.241004,   # Поликлиника №7
+      80.219088,   # Поликлиника №9
+      80.397044,   # ЦПМСП №10
+      81.066119,   # Шульбинская ВА
+      80.230622,   # МУ Победа
+      80.212109,   # Поликлиника №8
+      80.133900,   # Центральная смотровая поликлиника
+      80.256926,   # Жан-Ер
+      80.229018,   # IV Plus
+      80.265520,   # Поликлиника №6
+      80.259583,   # Железнодорожная больница
+      80.298860,   # Әділ-Ем
+      79.261491,   # Абайская районная больница
+      77.392838,   # Абралинская больница
+      82.800734,   # Аксуатская ЦРБ
+      79.480311,   # Бескарагайская ЦРБ
+      82.010600,   # Больница района Мақаншы
+      81.609492,   # МЦРБ Урджарского района
+      80.947669,   # Бородулихинская ЦРБ
+      81.559450,   # Жарминская ЦРБ
+      81.051708,   # Шарская горбольница
+      81.559450,   # Амбулатория Азат
+      82.381391,   # Кокпектинская ЦРБ
+      78.323000,   # Курчатовская горбольница
+      80.423637,   # МЦРБ Аягозского района
+      80.440427    # Казыгул
+    ),
     stringsAsFactors = FALSE
   )
 
-  # Формируем data.frame МО с координатами
-  set.seed(42)  # Фиксируем seed для воспроизводимости разброса координат
-
   mo_list <- list()
   for (i in 1:nrow(mo_raw)) {
-    # Находим район по английскому названию
     d_idx <- which(districts_sf$district_name_en == mo_raw$district_en[i])
     if (length(d_idx) == 0) next
 
     d <- districts_sf[d_idx, ]
 
-    # Координаты: центроид района + случайный разброс (~1 км = 0.01 градуса)
-    # чтобы маркеры МО не наложились друг на друга
-    lat_offset <- runif(1, -0.015, 0.015)
-    lon_offset <- runif(1, -0.015, 0.015)
-
-    # Короткое название: убираем типовые обёртки
     short <- mo_raw$mo_name[i]
     short <- gsub("КГП на ПХВ |' УЗ ОА|Учреждение |ТОО |Медицинское учреждение ", "", short)
     short <- gsub("'", "", short)
 
-    # Определяем тип и форму собственности по ключевым словам в названии
     mo_type <- case_when(
       grepl("Поликлиника|ПМСП|Центр ПМСП", mo_raw$mo_name[i]) ~ "Поликлиника",
       grepl("больница", mo_raw$mo_name[i], ignore.case = TRUE)  ~ "Больница",
@@ -211,20 +258,18 @@ setup_data <- function(
       ownership        = ownership,
       district_id      = d$district_id,
       district_name_ru = d$district_name_ru,
-      latitude         = d$centroid_lat + lat_offset,
-      longitude        = d$centroid_lon + lon_offset,
+      latitude         = mo_raw$real_lat[i],
+      longitude        = mo_raw$real_lon[i],
       stringsAsFactors = FALSE
     )
   }
 
   mo_df <- do.call(rbind, mo_list)
-  cat("   Сформировано", nrow(mo_df), "МО\n\n")
+  cat("   Сформировано", nrow(mo_df), "МО с реальными координатами\n\n")
 
-  # --- 5. СОЗДАНИЕ ПУСТЫХ ТАБЛИЦ ДАННЫХ (длинный формат) ---
+  # --- 5. ПУСТЫЕ ТАБЛИЦЫ (данные загружаются через админку) ---
   cat("4. Создание пустых таблиц данных...\n")
 
-  # Эпидемиология — длинный формат
-  # Каждая строка = один показатель для одного района за один период
   epidemiology <- data.frame(
     epi_id      = integer(0),
     district_id = integer(0),
@@ -236,8 +281,6 @@ setup_data <- function(
     stringsAsFactors = FALSE
   )
 
-  # Скрининг — длинный формат
-  # Каждая строка = один показатель для одной МО за один период
   screening <- data.frame(
     scr_id      = integer(0),
     mo_id       = integer(0),
@@ -249,113 +292,23 @@ setup_data <- function(
     stringsAsFactors = FALSE
   )
 
-  # --- 6. ГЕНЕРАЦИЯ ДЕМО-ДАННЫХ ---
-  # Создаём небольшой набор демонстрационных данных,
-  # чтобы дашборд не был пустым при первом запуске
-  cat("5. Генерация демонстрационных данных...\n")
+  cat("   Таблицы пустые — данные загружаются через админ-панель\n\n")
 
-  set.seed(123)
-  demo_epi <- list()
-  epi_counter <- 1
-
-  # Показатели эпидемиологии
-  epi_indicators <- c(
-    "Заболеваемость", "Смертность", "Ранняя диагностика (%)",
-    "Запущенность (%)", "5-лет. выживаемость (%)"
-  )
-
-  for (d_id in districts_sf$district_id) {
-    for (yr in 2022:2024) {
-      for (ind in epi_indicators) {
-        # Генерируем реалистичные значения для каждого показателя
-        val <- switch(ind,
-          "Заболеваемость"         = round(runif(1, 20, 120), 1),
-          "Смертность"             = round(runif(1, 5, 50), 1),
-          "Ранняя диагностика (%)" = round(runif(1, 35, 75), 1),
-          "Запущенность (%)"       = round(runif(1, 10, 45), 1),
-          "5-лет. выживаемость (%)" = round(runif(1, 40, 80), 1),
-          round(runif(1, 0, 100), 1)
-        )
-
-        demo_epi[[epi_counter]] <- data.frame(
-          epi_id      = epi_counter,
-          district_id = d_id,
-          year        = yr,
-          month       = NA_integer_,
-          indicator   = ind,
-          value       = val,
-          import_date = Sys.time(),
-          stringsAsFactors = FALSE
-        )
-        epi_counter <- epi_counter + 1
-      }
-    }
-  }
-
-  epidemiology <- do.call(rbind, demo_epi)
-  cat("   Создано", nrow(epidemiology), "записей эпидемиологии\n")
-
-  # Демо-данные скрининга
-  demo_scr <- list()
-  scr_counter <- 1
-
-  scr_indicators <- c(
-    "РМЖ - Начато", "РМЖ - Завершено", "РМЖ - Рак выявлен",
-    "КРР - Начато", "КРР - Завершено", "КРР - Рак выявлен",
-    "РШМ - Начато", "РШМ - Завершено", "РШМ - Рак выявлен"
-  )
-
-  for (m_id in mo_df$mo_id) {
-    for (yr in 2022:2024) {
-      for (mn in 1:12) {
-        for (ind in scr_indicators) {
-          # Генерируем значения в зависимости от типа показателя
-          val <- if (grepl("Начато", ind)) {
-            round(runif(1, 30, 250))
-          } else if (grepl("Завершено", ind)) {
-            round(runif(1, 25, 220))
-          } else {
-            round(runif(1, 0, 8))
-          }
-
-          demo_scr[[scr_counter]] <- data.frame(
-            scr_id      = scr_counter,
-            mo_id       = m_id,
-            year        = yr,
-            month       = mn,
-            indicator   = ind,
-            value       = val,
-            import_date = Sys.time(),
-            stringsAsFactors = FALSE
-          )
-          scr_counter <- scr_counter + 1
-        }
-      }
-    }
-  }
-
-  screening <- do.call(rbind, demo_scr)
-  cat("   Создано", nrow(screening), "записей скрининга\n\n")
-
-  # --- 7. СОХРАНЕНИЕ .RDS ФАЙЛОВ ---
-  cat("6. Сохранение .rds файлов...\n")
+  # --- 6. СОХРАНЕНИЕ .RDS ФАЙЛОВ ---
+  cat("5. Сохранение .rds файлов...\n")
 
   saveRDS(districts_sf, file.path(output_dir, "districts.rds"))
   saveRDS(mo_df,        file.path(output_dir, "mo.rds"))
   saveRDS(epidemiology, file.path(output_dir, "epidemiology.rds"))
   saveRDS(screening,    file.path(output_dir, "screening.rds"))
 
-  cat("   districts.rds    — ", nrow(districts_sf), "районов\n")
+  cat("   districts.rds    — ", nrow(districts_sf), "районов (с PCODE)\n")
   cat("   mo.rds           — ", nrow(mo_df), "МО\n")
-  cat("   epidemiology.rds — ", nrow(epidemiology), "записей\n")
-  cat("   screening.rds    — ", nrow(screening), "записей\n\n")
+  cat("   epidemiology.rds — пустая\n")
+  cat("   screening.rds    — пустая\n\n")
 
-  # --- 8. ИТОГОВАЯ СВОДКА ---
   cat(strrep("=", 70), "\n")
   cat("  ДАННЫЕ УСПЕШНО ИНИЦИАЛИЗИРОВАНЫ\n")
-  cat(strrep("=", 70), "\n\n")
-  cat("  Файлы сохранены в: ", normalizePath(output_dir), "\n")
-  cat("  Следующий шаг: запустите приложение — shiny::runApp('.')\n")
   cat(strrep("=", 70), "\n\n")
 
   return(invisible(list(
@@ -367,7 +320,6 @@ setup_data <- function(
 }
 
 # === ЗАПУСК ===
-# При прямом выполнении этого файла создаются все .rds
 if (interactive() || !exists(".setup_sourced_only")) {
   setup_data()
 }

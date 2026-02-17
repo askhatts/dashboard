@@ -29,6 +29,10 @@ function(input, output, session) {
     selected_district_id = NULL,   # ID кликнутого района
     selected_mo_id       = NULL,   # ID кликнутой МО
 
+    # --- Выбранные периоды на графиках (из mod_charts) ---
+    selected_period_a = NULL,      # list(year, month) из клика на графике А
+    selected_period_b = NULL,      # list(year, month) из клика на графике Б
+
     # --- Триггер открытия админки ---
     trigger_admin = NULL
   )
