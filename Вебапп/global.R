@@ -3,7 +3,7 @@
 # ============================================================
 # Этот файл выполняется ОДИН РАЗ при запуске приложения.
 # Здесь загружаются все библиотеки, определяются константы
-# и читаются .rds файлы данных.
+# и читаются данные из SQLite базы.
 # ============================================================
 
 # === ЗАГРУЗКА ПАКЕТОВ ===
@@ -25,6 +25,8 @@ suppressPackageStartupMessages({
   library(stringdist)     # Нечёткое сопоставление названий МО
   library(htmltools)      # HTML-конструкции для кастомных элементов
   library(digest)         # SHA256-хеш для пароля админки
+  library(DBI)            # Интерфейс к базам данных
+  library(RSQLite)        # SQLite драйвер
 })
 
 # === ПОДКЛЮЧЕНИЕ УТИЛИТ И МОДУЛЕЙ ===
@@ -77,19 +79,20 @@ app_theme <- bs_theme(
   "input-border-color" = "#3a3d5c"
 )
 
-# === ЗАГРУЗКА НАЧАЛЬНЫХ ДАННЫХ ===
-# Читаем .rds файлы. Если файлы не найдены (первый запуск),
-# функции из utils_db.R возвращают пустые структуры данных.
-cat("Загрузка данных...\n")
+# === ЗАГРУЗКА НАЧАЛЬНЫХ ДАННЫХ ИЗ SQLite ===
+cat("Загрузка данных из SQLite...\n")
 
-INIT_DISTRICTS    <- load_districts()
-INIT_MO           <- load_mo()
-INIT_EPIDEMIOLOGY <- load_epidemiology()
-INIT_SCREENING    <- load_screening()
+.init_conn <- get_db_connection()
+INIT_DISTRICTS    <- load_districts(.init_conn)
+INIT_MO           <- load_mo(.init_conn)
+INIT_EPIDEMIOLOGY <- load_epidemiology(.init_conn)
+INIT_SCREENING    <- load_screening(.init_conn)
+DBI::dbDisconnect(.init_conn)
+rm(.init_conn)
 
 # Проверяем, есть ли данные
 if (is.null(INIT_DISTRICTS)) {
-  warning("Районы не загружены! Запустите source('R/setup_database.R') для инициализации.")
+  warning("Районы не загружены! Проверьте SQLite базу data/abai_region.sqlite")
 }
 
 cat(sprintf("  Районов: %s | МО: %d | Эпид: %d | Скрин: %d\n",

@@ -2,233 +2,265 @@
 # МОДУЛЬ: АДМИН-ПАНЕЛЬ
 # ============================================================
 # Защищённая паролем панель для:
-#   1. Загрузки данных из Excel (по отдельности: эпид, скрининг, координаты, шейпфайл)
-#   2. Поддержка пациентского формата скрининга (per-patient → агрегация)
-#   3. Редактирования данных в табличном интерфейсе (inline)
-#   4. Сохранения изменений в .rds файлы
+#   1. Загрузки данных из Excel (эпид, скрининг, координаты, шейпфайл)
+#   2. Ручного ввода эпидемиологии по районам
+#   3. Редактирования данных в DT (inline cell editing)
+#   4. CRUD операций напрямую в SQLite
 #   5. Скачивания шаблонов Excel
-#   6. Справочник ID районов и МО
+#   6. Справочник районов и МО
 # ============================================================
 
 # === UI МОДУЛЯ ===
 mod_admin_ui <- function(id) {
   ns <- NS(id)
 
-  hidden(
-    div(id = ns("admin_panel"), class = "admin-overlay",
-      div(class = "admin-content", style = "position: relative;",
-        actionButton(ns("close_admin"), label = NULL, icon = icon("times"),
-                     class = "admin-close"),
+  # ИСПРАВЛЕНИЕ: используем style="display:none;" вместо hidden()
+  # hidden() добавляет класс shinyjs-hide с display:none!important,
+  # который не перебивается jQuery .show()
+  div(id = ns("admin_panel"), class = "admin-overlay", style = "display: none;",
+    div(class = "admin-content", style = "position: relative; max-height: 90vh; overflow-y: auto;",
+      actionButton(ns("close_admin"), label = NULL, icon = icon("times"),
+                   class = "admin-close"),
 
-        h3("Панель администратора",
-           style = "color: #ffffff; margin-bottom: 16px;"),
+      h3("Панель администратора",
+         style = "color: #ffffff; margin-bottom: 16px;"),
 
-        tabsetPanel(
-          id = ns("admin_tabs"),
-          type = "pills",
+      tabsetPanel(
+        id = ns("admin_tabs"),
+        type = "pills",
 
-          # === ВКЛАДКА 1: ЗАГРУЗКА ДАННЫХ ===
-          tabPanel(
-            title = "Загрузка данных",
-            icon  = icon("upload"),
-            div(style = "padding-top: 16px;",
-
-              # --- Справочник ID (сворачиваемый) ---
-              tags$details(style = "margin-bottom: 16px; border: 1px solid #30305a; border-radius: 6px; padding: 8px 12px;",
-                tags$summary(style = "color: #ffc107; cursor: pointer; font-weight: 600;",
-                  icon("info-circle"), " Справочник ID районов и медорганизаций"
+        # === ВКЛАДКА 1: ЗАГРУЗКА ДАННЫХ ===
+        tabPanel(
+          title = "Загрузка",
+          icon  = icon("upload"),
+          div(style = "padding-top: 16px;",
+            fluidRow(
+              # --- Эпидемиология ---
+              column(6,
+                h4("Эпидемиология", style = "color: #00d2ff;"),
+                p("Excel: Район | Год | Показатель1 | Показатель2 | ...",
+                  style = "color: #6c757d; font-size: 12px;"),
+                fileInput(ns("file_epi"), "Excel (эпидемиология):",
+                          accept = c(".xlsx", ".xls")),
+                fluidRow(
+                  column(6, numericInput(ns("epi_year_upload"), "Год (если нет в файле):",
+                                         value = as.integer(format(Sys.Date(), "%Y")),
+                                         min = 2020, max = 2035)),
+                  column(6, numericInput(ns("epi_month_upload"), "Месяц (если нет):",
+                                         value = NA, min = 1, max = 12))
                 ),
-                div(style = "margin-top: 12px;",
-                  fluidRow(
-                    column(6,
-                      h5("Районы", style = "color: #00d2ff;"),
-                      DTOutput(ns("ref_districts"))
-                    ),
-                    column(6,
-                      h5("Медорганизации", style = "color: #ff6b35;"),
-                      DTOutput(ns("ref_mo"))
-                    )
-                  )
-                )
+                actionButton(ns("btn_import_epi"), "Импортировать эпидемиологию",
+                             icon = icon("upload"), class = "btn-primary btn-sm",
+                             style = "margin-top: 4px;")
               ),
 
-              fluidRow(
-                # --- Эпидемиология ---
-                column(6,
-                  h4("Эпидемиология", style = "color: #00d2ff;"),
-                  p("Excel: Район | Год | Показатель1 | Показатель2 | ...",
-                    style = "color: #6c757d; font-size: 12px;"),
-                  fileInput(ns("file_epi"), "Excel (эпидемиология):",
-                            accept = c(".xlsx", ".xls")),
-                  fluidRow(
-                    column(6, numericInput(ns("epi_year"), "Год (если нет в файле):",
-                                           value = as.integer(format(Sys.Date(), "%Y")),
-                                           min = 2020, max = 2035)),
-                    column(6, numericInput(ns("epi_month"), "Месяц (если нет):",
-                                           value = NA, min = 1, max = 12))
-                  ),
-                  actionButton(ns("btn_import_epi"), "Импортировать эпидемиологию",
-                               icon = icon("upload"), class = "btn-primary btn-sm",
-                               style = "margin-top: 4px;")
+              # --- Скрининг ---
+              column(6,
+                h4("Скрининг", style = "color: #ff6b35;"),
+                p("Excel: МО | Год | Месяц | Показатели... ИЛИ пациентский формат",
+                  style = "color: #6c757d; font-size: 12px;"),
+                fileInput(ns("file_scr"), "Excel (скрининг):",
+                          accept = c(".xlsx", ".xls")),
+                fluidRow(
+                  column(4, selectInput(ns("scr_type"), "Тип скрининга:",
+                                        choices = c("РМЖ" = "РМЖ", "КРР" = "КРР", "РШМ" = "РШМ", "Без префикса" = ""),
+                                        width = "100%")),
+                  column(4, numericInput(ns("scr_year"), "Год:",
+                                         value = as.integer(format(Sys.Date(), "%Y")),
+                                         min = 2020, max = 2035)),
+                  column(4, numericInput(ns("scr_month"), "Месяц:",
+                                         value = NA, min = 1, max = 12))
                 ),
+                actionButton(ns("btn_import_scr"), "Импортировать скрининг",
+                             icon = icon("upload"), class = "btn-primary btn-sm",
+                             style = "margin-top: 4px;")
+              )
+            ),
 
-                # --- Скрининг ---
-                column(6,
-                  h4("Скрининг", style = "color: #ff6b35;"),
-                  p("Excel: МО | Год | Месяц | Показатели... ИЛИ пациентский формат (ФИО, ИИН, Дата_начала...)",
-                    style = "color: #6c757d; font-size: 12px;"),
-                  fileInput(ns("file_scr"), "Excel (скрининг):",
-                            accept = c(".xlsx", ".xls")),
-                  fluidRow(
-                    column(4, selectInput(ns("scr_type"), "Тип скрининга:",
-                                          choices = c("РМЖ" = "РМЖ", "КРР" = "КРР", "РШМ" = "РШМ", "Без префикса" = ""),
-                                          width = "100%")),
-                    column(4, numericInput(ns("scr_year"), "Год:",
-                                           value = as.integer(format(Sys.Date(), "%Y")),
-                                           min = 2020, max = 2035)),
-                    column(4, numericInput(ns("scr_month"), "Месяц:",
-                                           value = NA, min = 1, max = 12))
-                  ),
-                  actionButton(ns("btn_import_scr"), "Импортировать скрининг",
-                               icon = icon("upload"), class = "btn-primary btn-sm",
-                               style = "margin-top: 4px;")
-                )
+            tags$hr(style = "border-color: #30305a;"),
+
+            fluidRow(
+              # --- Координаты МО ---
+              column(6,
+                h4("Координаты МО", style = "color: #00e676;"),
+                p("Excel: МО | Широта | Долгота",
+                  style = "color: #6c757d; font-size: 12px;"),
+                fileInput(ns("file_mo_coords"), "Excel (координаты):",
+                          accept = c(".xlsx", ".xls")),
+                actionButton(ns("btn_import_coords"), "Импортировать координаты",
+                             icon = icon("upload"), class = "btn-primary btn-sm",
+                             style = "margin-top: 4px;")
               ),
 
-              tags$hr(style = "border-color: #30305a;"),
+              # --- Шейпфайл ---
+              column(6,
+                h4("Шейпфайл районов", style = "color: #ffc107;"),
+                p("Загрузите все 5 файлов: .shp, .shx, .dbf, .prj, .cpg",
+                  style = "color: #6c757d; font-size: 12px;"),
+                fileInput(ns("file_shapefile"), "Файлы шейпа:",
+                          accept = c(".shp", ".shx", ".dbf", ".prj", ".cpg"),
+                          multiple = TRUE),
+                actionButton(ns("btn_import_shp"), "Импортировать шейпфайл",
+                             icon = icon("upload"), class = "btn-primary btn-sm",
+                             style = "margin-top: 4px;")
+              )
+            ),
 
-              fluidRow(
-                # --- Координаты МО ---
-                column(6,
-                  h4("Координаты МО", style = "color: #00e676;"),
-                  p("Excel: МО | Широта | Долгота",
-                    style = "color: #6c757d; font-size: 12px;"),
-                  fileInput(ns("file_mo_coords"), "Excel (координаты):",
-                            accept = c(".xlsx", ".xls")),
-                  actionButton(ns("btn_import_coords"), "Импортировать координаты",
-                               icon = icon("upload"), class = "btn-primary btn-sm",
-                               style = "margin-top: 4px;")
-                ),
+            # Предпросмотр загруженных данных
+            div(style = "margin-top: 16px;",
+              uiOutput(ns("preview_ui"))
+            )
+          )
+        ),
 
-                # --- Шейпфайл ---
-                column(6,
-                  h4("Шейпфайл районов", style = "color: #ffc107;"),
-                  p("Загрузите все 5 файлов: .shp, .shx, .dbf, .prj, .cpg",
-                    style = "color: #6c757d; font-size: 12px;"),
-                  fileInput(ns("file_shapefile"), "Файлы шейпа:",
-                            accept = c(".shp", ".shx", ".dbf", ".prj", ".cpg"),
-                            multiple = TRUE),
-                  actionButton(ns("btn_import_shp"), "Импортировать шейпфайл",
-                               icon = icon("upload"), class = "btn-primary btn-sm",
-                               style = "margin-top: 4px;")
-                )
+        # === ВКЛАДКА 2: ЭПИДЕМИОЛОГИЯ (ручной ввод + редактирование) ===
+        tabPanel(
+          title = "Эпидемиология",
+          icon  = icon("chart-line"),
+          div(style = "padding-top: 16px;",
+            h4("Ручной ввод эпидемиологических данных", style = "color: #00d2ff;"),
+            fluidRow(
+              column(3, selectInput(ns("epi_district"), "Район:", choices = NULL)),
+              column(2, numericInput(ns("epi_year"), "Год:",
+                                     value = as.integer(format(Sys.Date(), "%Y")),
+                                     min = 2020, max = 2035)),
+              column(2, numericInput(ns("epi_month"), "Месяц:",
+                                     value = NA, min = 1, max = 12)),
+              column(3, textInput(ns("epi_indicator"), "Показатель:",
+                                   placeholder = "Заболеваемость")),
+              column(2, numericInput(ns("epi_value"), "Значение:", value = NA))
+            ),
+            actionButton(ns("btn_epi_add"), "Добавить запись",
+                         icon = icon("plus"), class = "btn-success btn-sm"),
+
+            tags$hr(style = "border-color: #30305a;"),
+
+            h4("Данные эпидемиологии", style = "color: #00d2ff;"),
+            p("Кликните по ячейке для редактирования. Изменения сохраняются в SQL автоматически.",
+              style = "color: #6c757d; font-size: 12px;"),
+            DTOutput(ns("table_epi_edit")),
+
+            fluidRow(
+              column(6,
+                actionButton(ns("btn_delete_epi"), "Удалить выбранные строки",
+                             icon = icon("trash"), class = "btn-danger btn-sm",
+                             style = "margin-top: 8px;")
               ),
-
-              # Предпросмотр загруженных данных
-              div(style = "margin-top: 16px;",
-                uiOutput(ns("preview_ui"))
+              column(6,
+                actionButton(ns("btn_clear_epi"), "Очистить всё",
+                             icon = icon("trash-alt"), class = "btn-outline-danger btn-sm",
+                             style = "margin-top: 8px;")
               )
             )
-          ),
+          )
+        ),
 
-          # === ВКЛАДКА 2: РЕДАКТИРОВАНИЕ ДАННЫХ ===
-          tabPanel(
-            title = "Редактирование",
-            icon  = icon("edit"),
-            div(style = "padding-top: 16px;",
-              h4("Эпидемиология", style = "color: #00d2ff;"),
-              DTOutput(ns("table_epi_edit")),
+        # === ВКЛАДКА 3: СКРИНИНГ (редактирование) ===
+        tabPanel(
+          title = "Скрининг",
+          icon  = icon("microscope"),
+          div(style = "padding-top: 16px;",
+            h4("Данные скрининга", style = "color: #ff6b35;"),
+            p("Кликните по ячейке для редактирования. Изменения сохраняются в SQL автоматически.",
+              style = "color: #6c757d; font-size: 12px;"),
+            DTOutput(ns("table_scr_edit")),
 
-              tags$hr(style = "border-color: #30305a;"),
-
-              h4("Скрининг", style = "color: #ff6b35;"),
-              DTOutput(ns("table_scr_edit")),
-
-              tags$hr(style = "border-color: #30305a;"),
-
-              h4("Медорганизации", style = "color: #00e676;"),
-              DTOutput(ns("table_mo_edit")),
-
-              tags$hr(style = "border-color: #30305a;"),
-
-              fluidRow(
-                column(4,
-                  actionButton(ns("btn_save"), "Сохранить все изменения",
-                               icon = icon("save"), class = "btn-success btn-lg",
-                               style = "margin-top: 8px;")
-                ),
-                column(4,
-                  actionButton(ns("btn_clear_epi"), "Очистить эпидемиологию",
-                               icon = icon("trash"), class = "btn-danger btn-sm",
-                               style = "margin-top: 12px;")
-                ),
-                column(4,
-                  actionButton(ns("btn_clear_scr"), "Очистить скрининг",
-                               icon = icon("trash"), class = "btn-danger btn-sm",
-                               style = "margin-top: 12px;")
-                )
+            fluidRow(
+              column(6,
+                actionButton(ns("btn_delete_scr"), "Удалить выбранные строки",
+                             icon = icon("trash"), class = "btn-danger btn-sm",
+                             style = "margin-top: 8px;")
+              ),
+              column(6,
+                actionButton(ns("btn_clear_scr"), "Очистить всё",
+                             icon = icon("trash-alt"), class = "btn-outline-danger btn-sm",
+                             style = "margin-top: 8px;")
               )
             )
-          ),
+          )
+        ),
 
-          # === ВКЛАДКА 3: ШАБЛОНЫ ===
-          tabPanel(
-            title = "Шаблоны",
-            icon  = icon("download"),
-            div(style = "padding-top: 16px;",
-              h4("Скачать шаблоны Excel", style = "color: #ffffff;"),
-              p("Используйте эти шаблоны для подготовки данных к загрузке.",
-                style = "color: #a0a0a0;"),
+        # === ВКЛАДКА 4: МЕДОРГАНИЗАЦИИ (координаты, тип, район) ===
+        tabPanel(
+          title = "Медорганизации",
+          icon  = icon("hospital"),
+          div(style = "padding-top: 16px;",
+            h4("Медорганизации", style = "color: #00e676;"),
+            p("Редактируйте координаты, тип, название. Изменения сохраняются в SQL автоматически.",
+              style = "color: #6c757d; font-size: 12px;"),
+            DTOutput(ns("table_mo_edit"))
+          )
+        ),
 
-              tags$br(),
-              fluidRow(
-                column(3,
-                  div(class = "info-box", style = "text-align: center; padding: 20px;",
-                    icon("table", style = "font-size: 24px; color: #00d2ff;"),
-                    tags$br(), tags$br(),
-                    strong("Эпидемиология", style = "color: #e0e0e0;"),
-                    tags$br(),
-                    span("Район, Год, Показатели", style = "color: #6c757d; font-size: 11px;"),
-                    tags$br(), tags$br(),
-                    downloadButton(ns("dl_tpl_epi"), "Скачать",
-                                   class = "btn-download")
-                  )
-                ),
-                column(3,
-                  div(class = "info-box", style = "text-align: center; padding: 20px;",
-                    icon("hospital", style = "font-size: 24px; color: #ff6b35;"),
-                    tags$br(), tags$br(),
-                    strong("Скрининг (агрег.)", style = "color: #e0e0e0;"),
-                    tags$br(),
-                    span("МО, Год, Месяц, Показатели", style = "color: #6c757d; font-size: 11px;"),
-                    tags$br(), tags$br(),
-                    downloadButton(ns("dl_tpl_scr"), "Скачать",
-                                   class = "btn-download")
-                  )
-                ),
-                column(3,
-                  div(class = "info-box", style = "text-align: center; padding: 20px;",
-                    icon("user", style = "font-size: 24px; color: #bb86fc;"),
-                    tags$br(), tags$br(),
-                    strong("Скрининг (пациент.)", style = "color: #e0e0e0;"),
-                    tags$br(),
-                    span("МО, ФИО, ИИН, Дата, Показатели", style = "color: #6c757d; font-size: 11px;"),
-                    tags$br(), tags$br(),
-                    downloadButton(ns("dl_tpl_scr_patient"), "Скачать",
-                                   class = "btn-download")
-                  )
-                ),
-                column(3,
-                  div(class = "info-box", style = "text-align: center; padding: 20px;",
-                    icon("map-marker-alt", style = "font-size: 24px; color: #00e676;"),
-                    tags$br(), tags$br(),
-                    strong("Координаты МО", style = "color: #e0e0e0;"),
-                    tags$br(),
-                    span("МО, Широта, Долгота", style = "color: #6c757d; font-size: 11px;"),
-                    tags$br(), tags$br(),
-                    downloadButton(ns("dl_tpl_coords"), "Скачать",
-                                   class = "btn-download")
-                  )
+        # === ВКЛАДКА 5: РАЙОНЫ (справочник) ===
+        tabPanel(
+          title = "Районы",
+          icon  = icon("map"),
+          div(style = "padding-top: 16px;",
+            h4("Справочник районов", style = "color: #ffc107;"),
+            p("Справочная таблица (только чтение).",
+              style = "color: #6c757d; font-size: 12px;"),
+            DTOutput(ns("ref_districts"))
+          )
+        ),
+
+        # === ВКЛАДКА 6: ШАБЛОНЫ ===
+        tabPanel(
+          title = "Шаблоны",
+          icon  = icon("download"),
+          div(style = "padding-top: 16px;",
+            h4("Скачать шаблоны Excel", style = "color: #ffffff;"),
+            p("Используйте эти шаблоны для подготовки данных к загрузке.",
+              style = "color: #a0a0a0;"),
+
+            tags$br(),
+            fluidRow(
+              column(3,
+                div(class = "info-box", style = "text-align: center; padding: 20px;",
+                  icon("table", style = "font-size: 24px; color: #00d2ff;"),
+                  tags$br(), tags$br(),
+                  strong("Эпидемиология", style = "color: #e0e0e0;"),
+                  tags$br(),
+                  span("Район, Год, Показатели", style = "color: #6c757d; font-size: 11px;"),
+                  tags$br(), tags$br(),
+                  downloadButton(ns("dl_tpl_epi"), "Скачать",
+                                 class = "btn-download")
+                )
+              ),
+              column(3,
+                div(class = "info-box", style = "text-align: center; padding: 20px;",
+                  icon("hospital", style = "font-size: 24px; color: #ff6b35;"),
+                  tags$br(), tags$br(),
+                  strong("Скрининг (агрег.)", style = "color: #e0e0e0;"),
+                  tags$br(),
+                  span("МО, Год, Месяц, Показатели", style = "color: #6c757d; font-size: 11px;"),
+                  tags$br(), tags$br(),
+                  downloadButton(ns("dl_tpl_scr"), "Скачать",
+                                 class = "btn-download")
+                )
+              ),
+              column(3,
+                div(class = "info-box", style = "text-align: center; padding: 20px;",
+                  icon("user", style = "font-size: 24px; color: #bb86fc;"),
+                  tags$br(), tags$br(),
+                  strong("Скрининг (пациент.)", style = "color: #e0e0e0;"),
+                  tags$br(),
+                  span("МО, ФИО, ИИН, Дата, Показатели", style = "color: #6c757d; font-size: 11px;"),
+                  tags$br(), tags$br(),
+                  downloadButton(ns("dl_tpl_scr_patient"), "Скачать",
+                                 class = "btn-download")
+                )
+              ),
+              column(3,
+                div(class = "info-box", style = "text-align: center; padding: 20px;",
+                  icon("map-marker-alt", style = "font-size: 24px; color: #00e676;"),
+                  tags$br(), tags$br(),
+                  strong("Координаты МО", style = "color: #e0e0e0;"),
+                  tags$br(),
+                  span("МО, Широта, Долгота", style = "color: #6c757d; font-size: 11px;"),
+                  tags$br(), tags$br(),
+                  downloadButton(ns("dl_tpl_coords"), "Скачать",
+                                 class = "btn-download")
                 )
               )
             )
@@ -249,7 +281,7 @@ mod_admin_server <- function(id, rv) {
     # === АВТОРИЗАЦИЯ ===
     observeEvent(rv$trigger_admin, {
       if (is_authorized()) {
-        shinyjs::runjs(paste0("$('#", ns("admin_panel"), "').show();"))
+        shinyjs::show("admin_panel")
       } else {
         showModal(modalDialog(
           title = "Авторизация администратора",
@@ -268,7 +300,7 @@ mod_admin_server <- function(id, rv) {
       if (entered_hash == ADMIN_PASSWORD_HASH) {
         is_authorized(TRUE)
         removeModal()
-        shinyjs::runjs(paste0("$('#", ns("admin_panel"), "').show();"))
+        shinyjs::show("admin_panel")
         showNotification("Вход выполнен", type = "message", duration = 3)
       } else {
         showNotification("Неверный пароль!", type = "error", duration = 5)
@@ -277,58 +309,64 @@ mod_admin_server <- function(id, rv) {
 
     # Закрытие админ-панели
     observeEvent(input$close_admin, {
-      shinyjs::runjs(paste0("$('#", ns("admin_panel"), "').hide();"))
+      shinyjs::hide("admin_panel")
     })
 
-    # === СПРАВОЧНЫЕ ТАБЛИЦЫ ===
+    # === ЗАПОЛНЕНИЕ СПИСКА РАЙОНОВ ДЛЯ РУЧНОГО ВВОДА ===
+    observe({
+      d <- rv$districts
+      if (!is.null(d) && nrow(d) > 0) {
+        df <- sf::st_drop_geometry(d)
+        choices <- setNames(df$district_id, df$district_name_ru)
+        updateSelectInput(session, "epi_district", choices = choices)
+      }
+    })
+
+    # === СПРАВОЧНАЯ ТАБЛИЦА РАЙОНОВ ===
     output$ref_districts <- renderDT({
       d <- rv$districts
       if (is.null(d) || nrow(d) == 0) return(datatable(data.frame(`Нет данных` = ""), rownames = FALSE))
-      df <- st_drop_geometry(d)[, c("district_id", "district_pcode", "district_name_ru")]
-      datatable(df, options = list(pageLength = 10, scrollY = "200px", dom = "t"), rownames = FALSE,
-                colnames = c("ID", "PCODE", "Район"))
+      df <- sf::st_drop_geometry(d)[, c("district_id", "district_pcode", "district_name_ru",
+                                          "district_type", "area_km2", "population")]
+      datatable(df, options = list(pageLength = 10, scrollX = TRUE, dom = "t"), rownames = FALSE,
+                colnames = c("ID", "PCODE", "Район", "Тип", "Площадь км2", "Население"))
     })
 
-    output$ref_mo <- renderDT({
-      m <- rv$mo
-      if (is.null(m) || nrow(m) == 0) return(datatable(data.frame(`Нет данных` = ""), rownames = FALSE))
-      df <- m[, c("mo_id", "mo_short_name", "district_name_ru")]
-      datatable(df, options = list(pageLength = 10, scrollY = "200px", dom = "tp"), rownames = FALSE,
-                colnames = c("ID", "МО", "Район"))
-    })
-
+    # ============================================
     # === ИМПОРТ ЭПИДЕМИОЛОГИИ ===
+    # ============================================
     observeEvent(input$btn_import_epi, {
       req(input$file_epi)
+      showModal(modalDialog(
+        title = "Подтверждение импорта",
+        p("Импортировать данные эпидемиологии из загруженного файла?"),
+        p("Данные будут добавлены в базу SQL.", style = "color: #ffc107;"),
+        footer = tagList(
+          modalButton("Отмена"),
+          actionButton(ns("btn_confirm_import_epi"), "Подтвердить", class = "btn-primary")
+        ),
+        easyClose = TRUE
+      ))
+    })
+
+    observeEvent(input$btn_confirm_import_epi, {
+      removeModal()
       tryCatch({
         raw <- readxl::read_excel(input$file_epi$datapath, guess_max = 5000)
-
         long_data <- parse_excel_to_long_format(
           data = raw,
           entity_type    = "district",
           reference_data = rv$districts,
-          year_override  = input$epi_year,
-          month_override = input$epi_month
+          year_override  = input$epi_year_upload,
+          month_override = input$epi_month_upload
         )
+        n_imported <- insert_epi_from_import(rv$db_conn, long_data)
+        log_import(rv$db_conn, "epidemiology", input$file_epi$name,
+                   nrow(long_data), n_imported, nrow(long_data) - n_imported, "success")
 
-        existing <- rv$epi
-        max_id <- if (nrow(existing) > 0) max(existing$epi_id) else 0
-
-        new_epi <- long_data %>%
-          dplyr::filter(!is.na(entity_id)) %>%
-          dplyr::transmute(
-            epi_id      = seq(max_id + 1, max_id + dplyr::n()),
-            district_id = entity_id,
-            year        = year,
-            month       = month,
-            indicator   = indicator,
-            value       = value,
-            import_date = import_date
-          )
-
-        rv$epi <- dplyr::bind_rows(existing, new_epi)
-        save_epidemiology(rv$epi)
-        showNotification(paste0("Эпидемиология: импортировано ", nrow(new_epi), " записей"),
+        # Перезагружаем из SQL
+        rv$epi <- load_epidemiology(rv$db_conn)
+        showNotification(paste0("Эпидемиология: импортировано ", n_imported, " записей"),
                         type = "message", duration = 8)
       }, error = function(e) {
         showNotification(paste("Ошибка импорта эпидемиологии:", e$message),
@@ -336,9 +374,25 @@ mod_admin_server <- function(id, rv) {
       })
     })
 
+    # ============================================
     # === ИМПОРТ СКРИНИНГА ===
+    # ============================================
     observeEvent(input$btn_import_scr, {
       req(input$file_scr)
+      showModal(modalDialog(
+        title = "Подтверждение импорта",
+        p("Импортировать данные скрининга из загруженного файла?"),
+        p("Данные будут добавлены в базу SQL.", style = "color: #ffc107;"),
+        footer = tagList(
+          modalButton("Отмена"),
+          actionButton(ns("btn_confirm_import_scr"), "Подтвердить", class = "btn-primary")
+        ),
+        easyClose = TRUE
+      ))
+    })
+
+    observeEvent(input$btn_confirm_import_scr, {
+      removeModal()
       tryCatch({
         raw <- readxl::read_excel(input$file_scr$datapath, guess_max = 10000)
 
@@ -361,24 +415,14 @@ mod_admin_server <- function(id, rv) {
           )
         }
 
-        existing <- rv$scr
-        max_id <- if (nrow(existing) > 0) max(existing$scr_id) else 0
+        screening_type <- if (is.null(input$scr_type)) "" else input$scr_type
+        n_imported <- insert_scr_from_import(rv$db_conn, long_data, screening_type)
+        log_import(rv$db_conn, "screening", input$file_scr$name,
+                   nrow(long_data), n_imported, nrow(long_data) - n_imported, "success")
 
-        new_scr <- long_data %>%
-          dplyr::filter(!is.na(entity_id)) %>%
-          dplyr::transmute(
-            scr_id      = seq(max_id + 1, max_id + dplyr::n()),
-            mo_id       = entity_id,
-            year        = year,
-            month       = month,
-            indicator   = indicator,
-            value       = value,
-            import_date = import_date
-          )
-
-        rv$scr <- dplyr::bind_rows(existing, new_scr)
-        save_screening(rv$scr)
-        showNotification(paste0("Скрининг: импортировано ", nrow(new_scr), " записей"),
+        # Перезагружаем из SQL
+        rv$scr <- load_screening(rv$db_conn)
+        showNotification(paste0("Скрининг: импортировано ", n_imported, " записей"),
                         type = "message", duration = 8)
       }, error = function(e) {
         showNotification(paste("Ошибка импорта скрининга:", e$message),
@@ -386,7 +430,9 @@ mod_admin_server <- function(id, rv) {
       })
     })
 
+    # ============================================
     # === ИМПОРТ КООРДИНАТ МО ===
+    # ============================================
     observeEvent(input$btn_import_coords, {
       req(input$file_mo_coords)
       tryCatch({
@@ -404,16 +450,14 @@ mod_admin_server <- function(id, rv) {
             lon <- suppressWarnings(as.numeric(raw[[detected$lon_col]][j]))
             if (is.na(lat) || is.na(lon)) next
 
-            idx <- which(mo_current$mo_id == matches$matched_mo_id[j])
-            if (length(idx) > 0) {
-              mo_current$latitude[idx]  <- lat
-              mo_current$longitude[idx] <- lon
-              updated <- updated + 1
-            }
+            mid <- matches$matched_mo_id[j]
+            update_mo_field(rv$db_conn, mid, "latitude", lat)
+            update_mo_field(rv$db_conn, mid, "longitude", lon)
+            updated <- updated + 1
           }
 
-          rv$mo <- mo_current
-          save_mo(rv$mo)
+          # Перезагружаем МО из SQL
+          rv$mo <- load_mo(rv$db_conn)
           showNotification(paste0("Координаты: обновлено ", updated, " МО"),
                           type = "message", duration = 8)
         } else {
@@ -426,7 +470,9 @@ mod_admin_server <- function(id, rv) {
       })
     })
 
+    # ============================================
     # === ИМПОРТ ШЕЙПФАЙЛА ===
+    # ============================================
     observeEvent(input$btn_import_shp, {
       req(input$file_shapefile)
       tryCatch({
@@ -449,7 +495,6 @@ mod_admin_server <- function(id, rv) {
 
           if (nrow(abai) > 0) {
             current <- rv$districts
-            # Сопоставляем по PCODE если есть
             if ("ADM2_PCODE" %in% names(abai) && "district_pcode" %in% names(current)) {
               for (j in 1:nrow(abai)) {
                 idx <- which(current$district_pcode == abai$ADM2_PCODE[j])
@@ -465,7 +510,6 @@ mod_admin_server <- function(id, rv) {
               )
             }
             rv$districts <- current
-            save_districts(rv$districts)
             showNotification(paste0("Шейпфайл: обновлено ", nrow(abai), " районов"),
                             type = "message", duration = 8)
           }
@@ -494,110 +538,296 @@ mod_admin_server <- function(id, rv) {
       } else {
         data <- NULL
       }
-
       if (is.null(data)) return(datatable(data.frame(`Файл не загружен` = ""), rownames = FALSE))
       datatable(data, options = list(scrollX = TRUE, pageLength = 10), rownames = FALSE)
     })
 
-    # === РЕДАКТИРУЕМЫЕ ТАБЛИЦЫ ===
+    # ============================================
+    # === РУЧНОЙ ВВОД ЭПИДЕМИОЛОГИИ ===
+    # ============================================
+    observeEvent(input$btn_epi_add, {
+      req(input$epi_district, input$epi_year, input$epi_indicator)
+
+      tryCatch({
+        district_id <- as.integer(input$epi_district)
+        year_val <- as.integer(input$epi_year)
+        month_val <- if (is.na(input$epi_month)) NA_integer_ else as.integer(input$epi_month)
+        indicator_val <- trimws(input$epi_indicator)
+        value_val <- if (is.na(input$epi_value)) NA_real_ else as.numeric(input$epi_value)
+
+        if (nchar(indicator_val) == 0) {
+          showNotification("Введите название показателя", type = "warning")
+          return()
+        }
+
+        save_epi_row(rv$db_conn, district_id, year_val, month_val, indicator_val, value_val)
+
+        # Перезагружаем из SQL
+        rv$epi <- load_epidemiology(rv$db_conn)
+
+        showNotification("Запись добавлена", type = "message", duration = 3)
+      }, error = function(e) {
+        showNotification(paste("Ошибка:", e$message), type = "error", duration = 8)
+      })
+    })
+
+    # ============================================
+    # === РЕДАКТИРУЕМАЯ ТАБЛИЦА ЭПИДЕМИОЛОГИИ ===
+    # ============================================
+
+    # Маппинг столбцов DT → столбцов SQL для эпидемиологии
+    epi_col_map <- c("epi_id", "district_id", "data_year", "data_month", "indicator", "value", "import_date")
+
     output$table_epi_edit <- renderDT({
       data <- rv$epi
       if (is.null(data) || nrow(data) == 0) {
         return(datatable(data.frame(`Нет данных` = ""), rownames = FALSE))
       }
-      data_display <- tail(data, 100)
-      datatable(data_display,
-        editable = list(target = "cell", disable = list(columns = c(0))),
-        options  = list(scrollX = TRUE, pageLength = 10),
-        rownames = FALSE
+      datatable(data,
+        editable = list(target = "cell", disable = list(columns = c(0, 6))),
+        selection = "multiple",
+        options  = list(scrollX = TRUE, pageLength = 15, order = list(list(0, "desc"))),
+        rownames = FALSE,
+        colnames = c("ID", "Район ID", "Год", "Месяц", "Показатель", "Значение", "Дата импорта")
       )
     })
 
     observeEvent(input$table_epi_edit_cell_edit, {
       info <- input$table_epi_edit_cell_edit
       epi <- rv$epi
-      n <- nrow(epi)
-      display_n <- min(n, 100)
-      real_row <- n - display_n + info$row
-      if (real_row > 0 && real_row <= n) {
-        epi[real_row, info$col + 1] <- DT::coerceValue(info$value, epi[real_row, info$col + 1])
+      if (is.null(epi) || nrow(epi) == 0) return()
+
+      row_idx <- info$row
+      col_idx <- info$col + 1  # DT 0-based → R 1-based
+      if (row_idx < 1 || row_idx > nrow(epi)) return()
+      if (col_idx < 1 || col_idx > length(epi_col_map)) return()
+
+      epi_id <- epi$epi_id[row_idx]
+      sql_col <- epi_col_map[col_idx]
+      new_value <- info$value
+
+      # Обновляем в SQL
+      tryCatch({
+        update_epi_cell(rv$db_conn, epi_id, sql_col, new_value)
+        # Обновляем в rv
+        epi[row_idx, col_idx] <- DT::coerceValue(new_value, epi[row_idx, col_idx])
         rv$epi <- epi
+      }, error = function(e) {
+        showNotification(paste("Ошибка обновления:", e$message), type = "error")
+      })
+    })
+
+    # Удаление выбранных строк эпидемиологии
+    observeEvent(input$btn_delete_epi, {
+      sel <- input$table_epi_edit_rows_selected
+      if (is.null(sel) || length(sel) == 0) {
+        showNotification("Выберите строки для удаления", type = "warning")
+        return()
+      }
+      showModal(modalDialog(
+        title = "Подтверждение удаления",
+        p(paste0("Удалить ", length(sel), " выбранных записей эпидемиологии?")),
+        footer = tagList(
+          modalButton("Отмена"),
+          actionButton(ns("btn_confirm_delete_epi"), "Удалить", class = "btn-danger")
+        ),
+        easyClose = TRUE
+      ))
+    })
+
+    observeEvent(input$btn_confirm_delete_epi, {
+      removeModal()
+      sel <- input$table_epi_edit_rows_selected
+      epi <- rv$epi
+      if (!is.null(sel) && length(sel) > 0 && !is.null(epi) && nrow(epi) > 0) {
+        ids_to_delete <- epi$epi_id[sel]
+        tryCatch({
+          delete_epi_rows(rv$db_conn, ids_to_delete)
+          rv$epi <- load_epidemiology(rv$db_conn)
+          showNotification(paste0("Удалено ", length(ids_to_delete), " записей"), type = "message")
+        }, error = function(e) {
+          showNotification(paste("Ошибка удаления:", e$message), type = "error")
+        })
       }
     })
+
+    # Очистка всей эпидемиологии
+    observeEvent(input$btn_clear_epi, {
+      showModal(modalDialog(
+        title = "Подтверждение очистки",
+        p("Удалить ВСЕ данные эпидемиологии?", style = "color: #ff5252; font-weight: bold;"),
+        footer = tagList(
+          modalButton("Отмена"),
+          actionButton(ns("btn_confirm_clear_epi"), "Очистить всё", class = "btn-danger")
+        ),
+        easyClose = TRUE
+      ))
+    })
+
+    observeEvent(input$btn_confirm_clear_epi, {
+      removeModal()
+      tryCatch({
+        DBI::dbExecute(rv$db_conn, "DELETE FROM epidemiology_data")
+        rv$epi <- create_empty_epidemiology()
+        showNotification("Данные эпидемиологии очищены", type = "warning", duration = 5)
+      }, error = function(e) {
+        showNotification(paste("Ошибка:", e$message), type = "error")
+      })
+    })
+
+    # ============================================
+    # === РЕДАКТИРУЕМАЯ ТАБЛИЦА СКРИНИНГА ===
+    # ============================================
+
+    scr_col_map <- c("scr_id", "mo_id", "data_year", "data_month", "indicator", "value", "import_date")
 
     output$table_scr_edit <- renderDT({
       data <- rv$scr
       if (is.null(data) || nrow(data) == 0) {
         return(datatable(data.frame(`Нет данных` = ""), rownames = FALSE))
       }
-      data_display <- tail(data, 100)
-      datatable(data_display,
-        editable = list(target = "cell", disable = list(columns = c(0))),
-        options  = list(scrollX = TRUE, pageLength = 10),
-        rownames = FALSE
+      datatable(data,
+        editable = list(target = "cell", disable = list(columns = c(0, 6))),
+        selection = "multiple",
+        options  = list(scrollX = TRUE, pageLength = 15, order = list(list(0, "desc"))),
+        rownames = FALSE,
+        colnames = c("ID", "МО ID", "Год", "Месяц", "Показатель", "Значение", "Дата импорта")
       )
     })
 
     observeEvent(input$table_scr_edit_cell_edit, {
       info <- input$table_scr_edit_cell_edit
       scr <- rv$scr
-      n <- nrow(scr)
-      display_n <- min(n, 100)
-      real_row <- n - display_n + info$row
-      if (real_row > 0 && real_row <= n) {
-        scr[real_row, info$col + 1] <- DT::coerceValue(info$value, scr[real_row, info$col + 1])
+      if (is.null(scr) || nrow(scr) == 0) return()
+
+      row_idx <- info$row
+      col_idx <- info$col + 1
+      if (row_idx < 1 || row_idx > nrow(scr)) return()
+      if (col_idx < 1 || col_idx > length(scr_col_map)) return()
+
+      scr_id <- scr$scr_id[row_idx]
+      sql_col <- scr_col_map[col_idx]
+      new_value <- info$value
+
+      tryCatch({
+        update_scr_cell(rv$db_conn, scr_id, sql_col, new_value)
+        scr[row_idx, col_idx] <- DT::coerceValue(new_value, scr[row_idx, col_idx])
         rv$scr <- scr
+      }, error = function(e) {
+        showNotification(paste("Ошибка обновления:", e$message), type = "error")
+      })
+    })
+
+    # Удаление выбранных строк скрининга
+    observeEvent(input$btn_delete_scr, {
+      sel <- input$table_scr_edit_rows_selected
+      if (is.null(sel) || length(sel) == 0) {
+        showNotification("Выберите строки для удаления", type = "warning")
+        return()
+      }
+      showModal(modalDialog(
+        title = "Подтверждение удаления",
+        p(paste0("Удалить ", length(sel), " выбранных записей скрининга?")),
+        footer = tagList(
+          modalButton("Отмена"),
+          actionButton(ns("btn_confirm_delete_scr"), "Удалить", class = "btn-danger")
+        ),
+        easyClose = TRUE
+      ))
+    })
+
+    observeEvent(input$btn_confirm_delete_scr, {
+      removeModal()
+      sel <- input$table_scr_edit_rows_selected
+      scr <- rv$scr
+      if (!is.null(sel) && length(sel) > 0 && !is.null(scr) && nrow(scr) > 0) {
+        ids_to_delete <- scr$scr_id[sel]
+        tryCatch({
+          delete_scr_rows(rv$db_conn, ids_to_delete)
+          rv$scr <- load_screening(rv$db_conn)
+          showNotification(paste0("Удалено ", length(ids_to_delete), " записей"), type = "message")
+        }, error = function(e) {
+          showNotification(paste("Ошибка удаления:", e$message), type = "error")
+        })
       }
     })
+
+    # Очистка всего скрининга
+    observeEvent(input$btn_clear_scr, {
+      showModal(modalDialog(
+        title = "Подтверждение очистки",
+        p("Удалить ВСЕ данные скрининга?", style = "color: #ff5252; font-weight: bold;"),
+        footer = tagList(
+          modalButton("Отмена"),
+          actionButton(ns("btn_confirm_clear_scr"), "Очистить всё", class = "btn-danger")
+        ),
+        easyClose = TRUE
+      ))
+    })
+
+    observeEvent(input$btn_confirm_clear_scr, {
+      removeModal()
+      tryCatch({
+        DBI::dbExecute(rv$db_conn, "DELETE FROM screening_data")
+        rv$scr <- create_empty_screening()
+        showNotification("Данные скрининга очищены", type = "warning", duration = 5)
+      }, error = function(e) {
+        showNotification(paste("Ошибка:", e$message), type = "error")
+      })
+    })
+
+    # ============================================
+    # === РЕДАКТИРУЕМАЯ ТАБЛИЦА МЕДОРГАНИЗАЦИЙ ===
+    # ============================================
+
+    # Столбцы МО: mo_id, mo_name, mo_short_name, mo_name_normalized, mo_type, ownership, latitude, longitude, district_id, district_name_ru
+    mo_editable_cols <- c("mo_name", "mo_short_name", "mo_type", "ownership", "latitude", "longitude")
 
     output$table_mo_edit <- renderDT({
       data <- rv$mo
       if (is.null(data) || nrow(data) == 0) {
         return(datatable(data.frame(`Нет данных` = ""), rownames = FALSE))
       }
-      datatable(data,
-        editable = list(target = "cell", disable = list(columns = c(0))),
+      # Показываем только нужные колонки для редактирования
+      display_df <- data[, c("mo_id", "mo_short_name", "mo_type", "ownership",
+                              "latitude", "longitude", "district_name_ru")]
+      datatable(display_df,
+        editable = list(target = "cell", disable = list(columns = c(0, 6))),
         options  = list(scrollX = TRUE, pageLength = 15),
-        rownames = FALSE
+        rownames = FALSE,
+        colnames = c("ID", "Название МО", "Тип", "Форма собст.", "Широта", "Долгота", "Район")
       )
     })
 
     observeEvent(input$table_mo_edit_cell_edit, {
       info <- input$table_mo_edit_cell_edit
       mo <- rv$mo
-      if (info$row > 0 && info$row <= nrow(mo)) {
-        mo[info$row, info$col + 1] <- DT::coerceValue(info$value, mo[info$row, info$col + 1])
-        rv$mo <- mo
-      }
-    })
+      if (is.null(mo) || nrow(mo) == 0) return()
 
-    # === СОХРАНЕНИЕ ===
-    observeEvent(input$btn_save, {
+      row_idx <- info$row
+      if (row_idx < 1 || row_idx > nrow(mo)) return()
+
+      # Столбцы display: mo_id, mo_short_name, mo_type, ownership, latitude, longitude, district_name_ru
+      display_to_sql <- c("mo_id", "mo_short_name", "mo_type", "ownership", "latitude", "longitude", "district_name_ru")
+      col_idx <- info$col + 1
+      if (col_idx < 1 || col_idx > length(display_to_sql)) return()
+
+      sql_field <- display_to_sql[col_idx]
+      mo_id <- mo$mo_id[row_idx]
+      new_value <- info$value
+
       tryCatch({
-        save_epidemiology(rv$epi)
-        save_screening(rv$scr)
-        save_mo(rv$mo)
-        showNotification("Все данные сохранены!", type = "message", duration = 5)
+        update_mo_field(rv$db_conn, mo_id, sql_field, new_value)
+        # Перезагружаем МО из SQL
+        rv$mo <- load_mo(rv$db_conn)
       }, error = function(e) {
-        showNotification(paste("Ошибка сохранения:", e$message),
-                        type = "error", duration = 10)
+        showNotification(paste("Ошибка обновления МО:", e$message), type = "error")
       })
     })
 
-    # === ОЧИСТКА ДАННЫХ ===
-    observeEvent(input$btn_clear_epi, {
-      rv$epi <- create_empty_epidemiology()
-      save_epidemiology(rv$epi)
-      showNotification("Данные эпидемиологии очищены", type = "warning", duration = 5)
-    })
-
-    observeEvent(input$btn_clear_scr, {
-      rv$scr <- create_empty_screening()
-      save_screening(rv$scr)
-      showNotification("Данные скрининга очищены", type = "warning", duration = 5)
-    })
-
+    # ============================================
     # === ШАБЛОНЫ ===
+    # ============================================
     output$dl_tpl_epi <- downloadHandler(
       filename = function() "template_epidemiology.xlsx",
       content  = function(file) {

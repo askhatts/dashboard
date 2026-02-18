@@ -1,119 +1,265 @@
 # ============================================================
-# УТИЛИТЫ ДЛЯ РАБОТЫ С ДАННЫМИ (.rds файлы)
+# УТИЛИТЫ ДЛЯ РАБОТЫ С ДАННЫМИ (SQLite)
 # ============================================================
-# Функции загрузки и сохранения .rds файлов.
-# При сохранении создаётся резервная копия (.bak),
-# чтобы не потерять данные при сбое записи.
+# Все данные хранятся в SQLite базе data/abai_region.sqlite.
+# Скрининг и эпидемиология — в длинном формате (indicator + value),
+# что позволяет работать с произвольными столбцами из Excel.
 # ============================================================
 
-# === ПУТИ К ФАЙЛАМ ДАННЫХ ===
-DATA_DIR       <- "data"
-DISTRICTS_PATH <- file.path(DATA_DIR, "districts.rds")
-MO_PATH        <- file.path(DATA_DIR, "mo.rds")
-EPI_PATH       <- file.path(DATA_DIR, "epidemiology.rds")
-SCR_PATH       <- file.path(DATA_DIR, "screening.rds")
+DB_PATH <- file.path("data", "abai_region.sqlite")
+
+# === ПОДКЛЮЧЕНИЕ К БД ===
+get_db_connection <- function(db_path = DB_PATH) {
+  conn <- DBI::dbConnect(RSQLite::SQLite(), db_path)
+  DBI::dbExecute(conn, "PRAGMA foreign_keys = ON")
+  DBI::dbExecute(conn, "PRAGMA journal_mode = WAL")
+  ensure_tables(conn)
+  conn
+}
+
+# === СОЗДАНИЕ GENERIC-ТАБЛИЦ ===
+ensure_tables <- function(conn) {
+  DBI::dbExecute(conn, "
+    CREATE TABLE IF NOT EXISTS screening_data (
+      scr_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mo_id INTEGER NOT NULL,
+      data_year INTEGER NOT NULL,
+      data_month INTEGER,
+      screening_type TEXT NOT NULL DEFAULT '',
+      indicator TEXT NOT NULL,
+      value REAL,
+      import_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      import_batch_id TEXT
+    )
+  ")
+  DBI::dbExecute(conn, "
+    CREATE TABLE IF NOT EXISTS epidemiology_data (
+      epi_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      district_id INTEGER NOT NULL,
+      data_year INTEGER NOT NULL,
+      data_month INTEGER,
+      indicator TEXT NOT NULL,
+      value REAL,
+      import_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      import_batch_id TEXT
+    )
+  ")
+}
 
 # === ЗАГРУЗКА РАЙОНОВ ===
 # Возвращает sf-объект с полигонами районов.
-# Если файл не найден — возвращает NULL.
-load_districts <- function(path = DISTRICTS_PATH) {
-  if (file.exists(path)) {
-    tryCatch(
-      readRDS(path),
-      error = function(e) {
-        warning("Ошибка чтения districts.rds: ", e$message)
-        NULL
-      }
-    )
-  } else {
-    warning("Файл не найден: ", path, "\n  Запустите R/setup_database.R для инициализации")
+load_districts <- function(conn) {
+  tryCatch({
+    df <- DBI::dbGetQuery(conn, "
+      SELECT district_id, district_name_en, district_name_ru, district_pcode,
+             district_type, area_km2, population, geometry_wkt,
+             centroid_lat, centroid_lon
+      FROM districts ORDER BY district_id
+    ")
+    if (nrow(df) == 0) return(NULL)
+
+    # Конвертация WKT → sf
+    valid <- !is.na(df$geometry_wkt) & nchar(df$geometry_wkt) > 0
+    if (!any(valid)) return(NULL)
+
+    geom <- sf::st_as_sfc(df$geometry_wkt[valid], crs = 4326)
+    df_data <- df[valid, setdiff(names(df), "geometry_wkt"), drop = FALSE]
+    sf_obj <- sf::st_sf(df_data, geometry = geom, crs = 4326)
+    sf_obj
+  }, error = function(e) {
+    warning("Ошибка загрузки районов из SQLite: ", e$message)
     NULL
-  }
+  })
 }
 
 # === ЗАГРУЗКА МЕДОРГАНИЗАЦИЙ ===
-# Возвращает data.frame с координатами и атрибутами МО.
-load_mo <- function(path = MO_PATH) {
-  if (file.exists(path)) {
-    tryCatch(
-      readRDS(path),
-      error = function(e) {
-        warning("Ошибка чтения mo.rds: ", e$message)
-        create_empty_mo()
-      }
-    )
-  } else {
-    warning("Файл МО не найден: ", path)
+# Возвращает data.frame с координатами и атрибутами МО (денормализованный).
+load_mo <- function(conn) {
+  tryCatch({
+    df <- DBI::dbGetQuery(conn, "
+      SELECT m.mo_id, m.mo_name, m.mo_short_name, m.mo_name_normalized,
+             m.mo_type, m.ownership, m.latitude, m.longitude,
+             d.district_id, d.district_name_ru
+      FROM medical_organizations m
+      LEFT JOIN mo_district_link mdl ON m.mo_id = mdl.mo_id AND mdl.is_primary = 1
+      LEFT JOIN districts d ON mdl.district_id = d.district_id
+      WHERE m.active = 1
+      ORDER BY m.mo_id
+    ")
+    if (nrow(df) == 0) return(create_empty_mo())
+    df
+  }, error = function(e) {
+    warning("Ошибка загрузки МО из SQLite: ", e$message)
     create_empty_mo()
-  }
+  })
 }
 
 # === ЗАГРУЗКА ЭПИДЕМИОЛОГИИ ===
 # Возвращает data.frame в длинном формате (indicator + value).
-load_epidemiology <- function(path = EPI_PATH) {
-  if (file.exists(path)) {
-    tryCatch(
-      readRDS(path),
-      error = function(e) {
-        warning("Ошибка чтения epidemiology.rds: ", e$message)
-        create_empty_epidemiology()
-      }
-    )
-  } else {
+load_epidemiology <- function(conn) {
+  tryCatch({
+    df <- DBI::dbGetQuery(conn, "
+      SELECT epi_id, district_id, data_year AS year, data_month AS month,
+             indicator, value, import_date
+      FROM epidemiology_data
+      ORDER BY data_year, data_month
+    ")
+    if (nrow(df) == 0) return(create_empty_epidemiology())
+    df
+  }, error = function(e) {
+    warning("Ошибка загрузки эпидемиологии из SQLite: ", e$message)
     create_empty_epidemiology()
-  }
+  })
 }
 
 # === ЗАГРУЗКА СКРИНИНГА ===
 # Возвращает data.frame в длинном формате (indicator + value).
-load_screening <- function(path = SCR_PATH) {
-  if (file.exists(path)) {
-    tryCatch(
-      readRDS(path),
-      error = function(e) {
-        warning("Ошибка чтения screening.rds: ", e$message)
-        create_empty_screening()
-      }
-    )
-  } else {
-    create_empty_screening()
-  }
-}
-
-# === СОХРАНЕНИЕ С РЕЗЕРВНОЙ КОПИЕЙ ===
-# Перед перезаписью создаёт .bak копию, чтобы при сбое
-# можно было восстановить предыдущую версию данных.
-safe_save_rds <- function(data, path) {
-  dir.create(dirname(path), showWarnings = FALSE, recursive = TRUE)
-
-  # Создаём резервную копию, если файл уже существует
-  if (file.exists(path)) {
-    bak_path <- paste0(path, ".bak")
-    tryCatch(
-      file.copy(path, bak_path, overwrite = TRUE),
-      error = function(e) warning("Не удалось создать резервную копию: ", e$message)
-    )
-  }
-
-  # Сохраняем данные
+# Если screening_type непустой, добавляет префикс к indicator.
+load_screening <- function(conn) {
   tryCatch({
-    saveRDS(data, path)
-    TRUE
+    df <- DBI::dbGetQuery(conn, "
+      SELECT scr_id, mo_id, data_year AS year, data_month AS month,
+             CASE WHEN screening_type != '' THEN screening_type || ' - ' || indicator
+                  ELSE indicator END AS indicator,
+             value, import_date
+      FROM screening_data
+      ORDER BY data_year, data_month
+    ")
+    if (nrow(df) == 0) return(create_empty_screening())
+    df
   }, error = function(e) {
-    warning("Ошибка сохранения ", path, ": ", e$message)
-    FALSE
+    warning("Ошибка загрузки скрининга из SQLite: ", e$message)
+    create_empty_screening()
   })
 }
 
-# Обёртки для конкретных типов данных
-save_districts    <- function(data) safe_save_rds(data, DISTRICTS_PATH)
-save_mo           <- function(data) safe_save_rds(data, MO_PATH)
-save_epidemiology <- function(data) safe_save_rds(data, EPI_PATH)
-save_screening    <- function(data) safe_save_rds(data, SCR_PATH)
+# === CRUD: ЭПИДЕМИОЛОГИЯ ===
+
+save_epi_row <- function(conn, district_id, year, month, indicator, value) {
+  DBI::dbExecute(conn, "
+    INSERT INTO epidemiology_data (district_id, data_year, data_month, indicator, value)
+    VALUES (?, ?, ?, ?, ?)
+  ", params = list(district_id, year, month, indicator, value))
+}
+
+update_epi_cell <- function(conn, epi_id, column, value) {
+  allowed <- c("district_id", "data_year", "data_month", "indicator", "value")
+  if (!column %in% allowed) return(FALSE)
+  sql <- paste0("UPDATE epidemiology_data SET ", column, " = ? WHERE epi_id = ?")
+  DBI::dbExecute(conn, sql, params = list(value, epi_id))
+  TRUE
+}
+
+delete_epi_rows <- function(conn, epi_ids) {
+  if (length(epi_ids) == 0) return(0)
+  placeholders <- paste(rep("?", length(epi_ids)), collapse = ", ")
+  sql <- paste0("DELETE FROM epidemiology_data WHERE epi_id IN (", placeholders, ")")
+  DBI::dbExecute(conn, sql, params = as.list(epi_ids))
+}
+
+insert_epi_from_import <- function(conn, long_data) {
+  if (is.null(long_data) || nrow(long_data) == 0) return(0)
+  batch_id <- paste0("epi_", format(Sys.time(), "%Y%m%d_%H%M%S"))
+  insert_df <- data.frame(
+    district_id     = long_data$entity_id,
+    data_year       = long_data$year,
+    data_month      = long_data$month,
+    indicator       = long_data$indicator,
+    value           = long_data$value,
+    import_date     = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    import_batch_id = batch_id,
+    stringsAsFactors = FALSE
+  )
+  insert_df <- insert_df[!is.na(insert_df$district_id), , drop = FALSE]
+  if (nrow(insert_df) == 0) return(0)
+
+  DBI::dbBegin(conn)
+  tryCatch({
+    DBI::dbAppendTable(conn, "epidemiology_data", insert_df)
+    DBI::dbCommit(conn)
+    nrow(insert_df)
+  }, error = function(e) {
+    DBI::dbRollback(conn)
+    stop(e)
+  })
+}
+
+# === CRUD: СКРИНИНГ ===
+
+save_scr_row <- function(conn, mo_id, year, month, screening_type, indicator, value) {
+  DBI::dbExecute(conn, "
+    INSERT INTO screening_data (mo_id, data_year, data_month, screening_type, indicator, value)
+    VALUES (?, ?, ?, ?, ?, ?)
+  ", params = list(mo_id, year, month, screening_type, indicator, value))
+}
+
+update_scr_cell <- function(conn, scr_id, column, value) {
+  allowed <- c("mo_id", "data_year", "data_month", "screening_type", "indicator", "value")
+  if (!column %in% allowed) return(FALSE)
+  sql <- paste0("UPDATE screening_data SET ", column, " = ? WHERE scr_id = ?")
+  DBI::dbExecute(conn, sql, params = list(value, scr_id))
+  TRUE
+}
+
+delete_scr_rows <- function(conn, scr_ids) {
+  if (length(scr_ids) == 0) return(0)
+  placeholders <- paste(rep("?", length(scr_ids)), collapse = ", ")
+  sql <- paste0("DELETE FROM screening_data WHERE scr_id IN (", placeholders, ")")
+  DBI::dbExecute(conn, sql, params = as.list(scr_ids))
+}
+
+insert_scr_from_import <- function(conn, long_data, screening_type = "") {
+  if (is.null(long_data) || nrow(long_data) == 0) return(0)
+  batch_id <- paste0("scr_", format(Sys.time(), "%Y%m%d_%H%M%S"))
+  insert_df <- data.frame(
+    mo_id           = long_data$entity_id,
+    data_year       = long_data$year,
+    data_month      = long_data$month,
+    screening_type  = screening_type,
+    indicator       = long_data$indicator,
+    value           = long_data$value,
+    import_date     = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    import_batch_id = batch_id,
+    stringsAsFactors = FALSE
+  )
+  insert_df <- insert_df[!is.na(insert_df$mo_id), , drop = FALSE]
+  if (nrow(insert_df) == 0) return(0)
+
+  DBI::dbBegin(conn)
+  tryCatch({
+    DBI::dbAppendTable(conn, "screening_data", insert_df)
+    DBI::dbCommit(conn)
+    nrow(insert_df)
+  }, error = function(e) {
+    DBI::dbRollback(conn)
+    stop(e)
+  })
+}
+
+# === CRUD: МО (координаты, название и т.д.) ===
+
+update_mo_field <- function(conn, mo_id, field, value) {
+  allowed <- c("mo_name", "mo_short_name", "mo_type", "ownership",
+                "latitude", "longitude", "active")
+  if (!field %in% allowed) return(FALSE)
+  sql <- paste0("UPDATE medical_organizations SET ", field, " = ?, updated_at = CURRENT_TIMESTAMP WHERE mo_id = ?")
+  DBI::dbExecute(conn, sql, params = list(value, mo_id))
+  TRUE
+}
+
+# === ЛОГИРОВАНИЕ ИМПОРТА ===
+
+log_import <- function(conn, type, filename, total, imported, failed, status, error_msg = NULL) {
+  batch_id <- paste0(type, "_", format(Sys.time(), "%Y%m%d_%H%M%S"))
+  DBI::dbExecute(conn, "
+    INSERT INTO import_log (import_batch_id, import_type, file_name,
+                            records_total, records_imported, records_failed,
+                            status, error_message, import_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  ", params = list(batch_id, type, filename, total, imported, failed, status, error_msg))
+}
 
 # === СОЗДАНИЕ ПУСТЫХ СТРУКТУР ДАННЫХ ===
-# Используются, когда .rds файлы ещё не существуют (первый запуск).
-# Гарантируют, что приложение не упадёт с ошибкой.
 
 create_empty_mo <- function() {
   data.frame(
@@ -123,10 +269,10 @@ create_empty_mo <- function() {
     mo_name_normalized = character(0),
     mo_type          = character(0),
     ownership        = character(0),
-    district_id      = integer(0),
-    district_name_ru = character(0),
     latitude         = numeric(0),
     longitude        = numeric(0),
+    district_id      = integer(0),
+    district_name_ru = character(0),
     stringsAsFactors = FALSE
   )
 }
@@ -139,7 +285,7 @@ create_empty_epidemiology <- function() {
     month       = integer(0),
     indicator   = character(0),
     value       = numeric(0),
-    import_date = as.POSIXct(character(0)),
+    import_date = character(0),
     stringsAsFactors = FALSE
   )
 }
@@ -152,7 +298,7 @@ create_empty_screening <- function() {
     month       = integer(0),
     indicator   = character(0),
     value       = numeric(0),
-    import_date = as.POSIXct(character(0)),
+    import_date = character(0),
     stringsAsFactors = FALSE
   )
 }
