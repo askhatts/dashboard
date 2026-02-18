@@ -29,6 +29,13 @@ suppressPackageStartupMessages({
   library(RSQLite)        # SQLite драйвер
 })
 
+# Разрешение конфликтов пакетов (для окружений с пакетом conflicted)
+if ("conflicted" %in% loadedNamespaces()) {
+  conflicted::conflicts_prefer(graphics::box)
+  conflicted::conflicts_prefer(dplyr::filter)
+  conflicted::conflicts_prefer(dplyr::lag)
+}
+
 # === ПОДКЛЮЧЕНИЕ УТИЛИТ И МОДУЛЕЙ ===
 # R Shiny автоматически sourced файлы из R/, но мы делаем это явно
 # для контроля порядка загрузки (утилиты ДО модулей)
