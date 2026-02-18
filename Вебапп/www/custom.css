@@ -485,11 +485,11 @@ table.dataTable tbody td {
 /* === МОДАЛЬНЫЕ ОКНА (для пароля и подтверждений) === */
 /* z-index выше admin-overlay (2000), чтобы модалки были поверх админки */
 .modal {
-  z-index: 2100 !important;
+  z-index: 3000 !important;
 }
 
 .modal-backdrop {
-  z-index: 2050 !important;
+  z-index: 2900 !important;
 }
 
 .modal-content {

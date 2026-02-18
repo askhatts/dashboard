@@ -221,13 +221,19 @@ mod_map_server <- function(id, rv) {
         iconWidth = 14, iconHeight = 14
       )
 
+      mo_with_scr <- mo_map_data()
+      mo_with_scr_ids <- if (is.null(mo_with_scr) || nrow(mo_with_scr) == 0) integer(0) else mo_with_scr$mo_id
+
       # Попапы для всех МО (базовая информация)
       base_popups <- paste0(
         "<div style='font-family:Inter,sans-serif;min-width:180px;'>",
         "<strong style='color:#ff6b35;font-size:14px;'>", all_mo$mo_short_name, "</strong><br>",
         "<span style='color:#a0a0a0;font-size:11px;'>", all_mo$mo_type,
         " (", all_mo$ownership, ")</span><br>",
-        "<span style='color:#6c757d;font-size:11px;'>Район: ", all_mo$district_name_ru, "</span>",
+        "<span style='color:#6c757d;font-size:11px;'>Район: ", all_mo$district_name_ru, "</span><br>",
+        "<span style='color:#a0a0a0;font-size:11px;'>Скрининг: ",
+        ifelse(all_mo$mo_id %in% mo_with_scr_ids, "есть данные", "&#9679; нет данных"),
+        "</span>",
         "</div>"
       )
 
@@ -238,18 +244,18 @@ mod_map_server <- function(id, rv) {
           group       = "Медорганизации",
           lng         = ~longitude,
           lat         = ~latitude,
-          radius      = 4,
-          fillColor   = "#ffffff",
-          fillOpacity = 0.7,
-          color       = "#ff6b35",
-          weight      = 2,
+          radius      = 3,
+          fillColor   = "#b0b7c3",
+          fillOpacity = 0.8,
+          color       = "#c6ccd8",
+          weight      = 1,
           popup       = base_popups,
           label       = ~mo_short_name,
           layerId     = ~paste0("mo_", mo_id)
         )
 
       # Если есть данные скрининга — круги поверх
-      data <- mo_map_data()
+      data <- mo_with_scr
       if (!is.null(data) && nrow(data) > 0) {
         scr_popups <- paste0(
           "<div style='font-family:Inter,sans-serif;min-width:200px;'>",

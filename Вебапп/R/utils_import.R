@@ -142,9 +142,45 @@ is_patient_level_format <- function(col_names) {
 # === НОРМАЛИЗАЦИЯ НАЗВАНИЙ МО ИЗ EXCEL (с подчёркиваниями) ===
 # Заменяет подчёркивания на пробелы, убирает лишние пробелы
 normalize_mo_excel_name <- function(name) {
-  n <- gsub("_", " ", as.character(name))
+  n <- tolower(as.character(name))
+  n <- gsub("_", " ", n)
+  n <- gsub("['\"«»]", " ", n)
+  n <- gsub("кгп\\s*на\\s*пхв|уз\\s*оа|гкп|пхв", " ", n)
+  n <- gsub("№", " ", n)
+  n <- gsub("[^[:alnum:]\\s]", " ", n)
   n <- gsub("\\s+", " ", trimws(n))
   n
+}
+
+# === УНИФИЦИРОВАННЫЙ ПАРСИНГ ДАТ ===
+parse_flexible_date <- function(x) {
+  if (inherits(x, "Date")) return(x)
+  if (inherits(x, "POSIXt")) return(as.Date(x))
+
+  if (all(is.na(x))) return(as.Date(rep(NA_character_, length(x))))
+
+  num <- suppressWarnings(as.numeric(x))
+  # Применяем numeric-конверсию только если подавляющее большинство значений числовые
+  if (sum(!is.na(num)) >= max(1, floor(length(x) * 0.8))) {
+    # Excel serial date (origin = 1899-12-30)
+    from_num <- as.Date(num, origin = "1899-12-30")
+    # Если после конвертации есть хотя бы одна адекватная дата — используем её
+    if (sum(!is.na(from_num)) > 0) return(from_num)
+  }
+
+  chr <- as.character(x)
+  chr <- trimws(chr)
+  chr[chr == ""] <- NA_character_
+
+  parsed <- suppressWarnings(as.Date(chr))
+  if (sum(!is.na(parsed)) == 0) {
+    parsed <- suppressWarnings(as.Date(chr, format = "%d.%m.%Y"))
+  }
+  if (sum(!is.na(parsed)) == 0) {
+    parsed <- suppressWarnings(as.Date(chr, format = "%d/%m/%Y"))
+  }
+
+  parsed
 }
 
 # === ПАРСИНГ ПАЦИЕНТСКОГО ФОРМАТА СКРИНИНГА ===
@@ -155,7 +191,7 @@ normalize_mo_excel_name <- function(name) {
 #   - Медиана_возраст (если есть колонка "Возраст")
 #   - Медиана_дней_до_завершения (Дата_окончания - Дата_начала)
 #   - Доля_просроченных_% (Дата_окончания > Планируемая_дата_завершения)
-#   - Все остальные числовые колонки — SUM
+#   - Другие колонки не агрегируются
 parse_patient_level_screening <- function(data, reference_mo,
                                            scr_type_prefix = "",
                                            year_override = NULL,
@@ -195,47 +231,18 @@ parse_patient_level_screening <- function(data, reference_mo,
   mo_id_col_idx <- which(grepl("^mo_id$|^id_мо$|^мо_id$", cn))
   mo_id_col <- if (length(mo_id_col_idx) > 0) orig_names[mo_id_col_idx[1]] else NULL
 
-  # Шаг 5: Мета-колонки (не агрегируются как SUM)
-  metadata_patterns <- paste0(
-    "фио|иин|iin|^пол$|пол$|возраст|age|gender|участок|дата|планируем|",
-    "фамил|имя|отчеств|name|area|прикрепл|статус"
-  )
-  metadata_idx <- which(grepl(metadata_patterns, cn))
-  metadata_cols <- orig_names[metadata_idx]
-  metadata_cols <- union(metadata_cols, mo_col)
-  if (!is.null(date_start_col)) metadata_cols <- union(metadata_cols, date_start_col)
-  if (!is.null(date_end_col)) metadata_cols <- union(metadata_cols, date_end_col)
-  if (!is.null(date_planned_col)) metadata_cols <- union(metadata_cols, date_planned_col)
-  if (!is.null(mo_id_col)) metadata_cols <- union(metadata_cols, mo_id_col)
-  if (!is.null(age_col)) metadata_cols <- union(metadata_cols, age_col)
-
-  # Шаг 6: Оставшиеся числовые колонки → SUM-показатели
-  potential_indicator_cols <- setdiff(orig_names, metadata_cols)
-  for (col in potential_indicator_cols) {
-    vals <- suppressWarnings(as.numeric(data[[col]]))
-    if (sum(!is.na(vals)) > 0) {
-      data[[col]] <- vals
-    }
-  }
-  indicator_cols <- potential_indicator_cols[
-    sapply(data[potential_indicator_cols], function(x) is.numeric(x) || is.integer(x))
-  ]
-  for (col in indicator_cols) {
-    data[[col]][is.na(data[[col]])] <- 0
-  }
-
-  # Шаг 7: Парсинг дат
+  # Шаг 5: Парсинг дат
   if (!is.null(date_start_col)) {
-    data$`.date_start` <- tryCatch(as.Date(data[[date_start_col]]), error = function(e) rep(NA, nrow(data)))
+    data$`.date_start` <- parse_flexible_date(data[[date_start_col]])
   }
   if (!is.null(date_end_col)) {
-    data$`.date_end` <- tryCatch(as.Date(data[[date_end_col]]), error = function(e) rep(NA, nrow(data)))
+    data$`.date_end` <- parse_flexible_date(data[[date_end_col]])
   }
   if (!is.null(date_planned_col)) {
-    data$`.date_planned` <- tryCatch(as.Date(data[[date_planned_col]]), error = function(e) rep(NA, nrow(data)))
+    data$`.date_planned` <- parse_flexible_date(data[[date_planned_col]])
   }
 
-  # Шаг 8: Извлекаем год/месяц
+  # Шаг 6: Извлекаем год/месяц
   if (!is.null(date_start_col) && ".date_start" %in% names(data)) {
     data$`.year` <- as.integer(format(data$`.date_start`, "%Y"))
     data$`.month` <- as.integer(format(data$`.date_start`, "%m"))
@@ -246,7 +253,8 @@ parse_patient_level_screening <- function(data, reference_mo,
     data$`.month` <- rep(month_override %||% NA_integer_, nrow(data))
   }
 
-  # Шаг 9: Сопоставление МО → mo_id (с нормализацией подчёркиваний)
+  # Шаг 7: Сопоставление МО → mo_id (с нормализацией подчёркиваний)
+  unmatched_mo_names <- character(0)
   if (!is.null(mo_id_col)) {
     data$`.mo_id` <- suppressWarnings(as.integer(data[[mo_id_col]]))
   } else {
@@ -255,11 +263,42 @@ parse_patient_level_screening <- function(data, reference_mo,
     clean_mo_names <- sapply(raw_mo_names, normalize_mo_excel_name, USE.NAMES = FALSE)
     unique_clean <- unique(clean_mo_names)
     mo_matches <- match_mo_names(unique_clean, reference_mo)
+
+    # Доп. fallback: токен-поиск + номер МО
+    unmatched_idx <- which(is.na(mo_matches$matched_mo_id))
+    if (length(unmatched_idx) > 0) {
+      db_names <- tolower(reference_mo$mo_name)
+      db_names <- sapply(db_names, normalize_mo_excel_name, USE.NAMES = FALSE)
+
+      for (idx in unmatched_idx) {
+        raw_name <- unique_clean[idx]
+        tokens <- unlist(strsplit(raw_name, "\\s+"))
+        tokens <- tokens[nchar(tokens) >= 3]
+        if (length(tokens) == 0) next
+
+        overlap <- vapply(db_names, function(nm) {
+          sum(tokens %in% unlist(strsplit(nm, "\\s+")))
+        }, numeric(1))
+
+        best <- which.max(overlap)
+        if (length(best) == 1 && overlap[best] >= 2) {
+          mo_matches$matched_mo_id[idx] <- reference_mo$mo_id[best]
+          mo_matches$matched_mo_name[idx] <- reference_mo$mo_name[best]
+          mo_matches$confidence[idx] <- 65
+          mo_matches$match_method[idx] <- "token"
+        }
+      }
+    }
+
     lookup <- setNames(mo_matches$matched_mo_id, unique_clean)
     data$`.mo_id` <- lookup[clean_mo_names]
+
+    unmatched_values <- mo_matches$excel_name[is.na(mo_matches$matched_mo_id)]
+    unmatched_mo_names <- unique(unmatched_values)
   }
 
-  # Шаг 10: Фильтруем строки без МО
+  # Шаг 8: Фильтруем строки без МО
+  unmatched_count <- sum(is.na(data$`.mo_id`))
   data <- data[!is.na(data$`.mo_id`), , drop = FALSE]
   if (nrow(data) == 0) stop("Не удалось сопоставить ни одну МО")
 
@@ -309,28 +348,13 @@ parse_patient_level_screening <- function(data, reference_mo,
     results[[length(results) + 1]] <- delay_data
   }
 
-  # 11e: SUM-показатели (остальные числовые колонки)
-  if (length(indicator_cols) > 0) {
-    sum_agg <- data %>%
-      dplyr::group_by(`.mo_id`, `.year`, `.month`) %>%
-      dplyr::summarise(
-        dplyr::across(dplyr::all_of(indicator_cols), ~sum(.x, na.rm = TRUE)),
-        .groups = "drop"
-      )
-    sum_long <- sum_agg %>%
-      tidyr::pivot_longer(
-        cols = dplyr::all_of(indicator_cols),
-        names_to = "indicator",
-        values_to = "value"
-      ) %>%
-      dplyr::filter(!is.na(value) & value != 0)
-    results[[length(results) + 1]] <- sum_long
-  }
-
   # Шаг 12: Объединяем все результаты
   long_data <- dplyr::bind_rows(results) %>%
     dplyr::rename(entity_id = `.mo_id`, year = `.year`, month = `.month`) %>%
     dplyr::mutate(import_date = format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
+
+  attr(long_data, "unmatched_mo_count") <- unmatched_count
+  attr(long_data, "unmatched_mo_names") <- unmatched_mo_names
 
   # Добавляем префикс типа скрининга
   if (nchar(scr_type_prefix) > 0) {

@@ -209,8 +209,46 @@ delete_scr_rows <- function(conn, scr_ids) {
   DBI::dbExecute(conn, sql, params = as.list(scr_ids))
 }
 
+deactivate_mo_rows <- function(conn, mo_ids) {
+  if (length(mo_ids) == 0) return(0)
+  placeholders <- paste(rep("?", length(mo_ids)), collapse = ", ")
+  sql <- paste0(
+    "UPDATE medical_organizations ",
+    "SET active = 0, updated_at = CURRENT_TIMESTAMP ",
+    "WHERE mo_id IN (", placeholders, ")"
+  )
+  DBI::dbExecute(conn, sql, params = as.list(mo_ids))
+}
+
 insert_scr_from_import <- function(conn, long_data, screening_type = "") {
   if (is.null(long_data) || nrow(long_data) == 0) return(0)
+
+  long_data <- as.data.frame(long_data, stringsAsFactors = FALSE)
+
+  scalarize_column <- function(x) {
+    if (!is.list(x)) return(x)
+    vapply(x, function(el) {
+      if (length(el) == 0 || all(is.na(el))) return(NA_character_)
+      as.character(el[[1]])
+    }, character(1))
+  }
+
+  required_cols <- c("entity_id", "year", "month", "indicator", "value")
+  missing_cols <- setdiff(required_cols, names(long_data))
+  if (length(missing_cols) > 0) {
+    stop("Импорт скрининга: отсутствуют колонки: ", paste(missing_cols, collapse = ", "))
+  }
+
+  for (nm in required_cols) {
+    long_data[[nm]] <- scalarize_column(long_data[[nm]])
+  }
+
+  if (length(screening_type) != 1) {
+    warning("screening_type должен быть длины 1, используется первый элемент")
+    screening_type <- screening_type[[1]]
+    if (is.null(screening_type) || is.na(screening_type)) screening_type <- ""
+  }
+
   batch_id <- paste0("scr_", format(Sys.time(), "%Y%m%d_%H%M%S"))
   n <- nrow(long_data)
 
@@ -226,6 +264,17 @@ insert_scr_from_import <- function(conn, long_data, screening_type = "") {
     import_batch_id = rep(batch_id, n),
     stringsAsFactors = FALSE
   )
+
+  list_cols <- names(insert_df)[vapply(insert_df, is.list, logical(1))]
+  if (length(list_cols) > 0) {
+    stop("Импорт скрининга: недопустимые list-колонки: ", paste(list_cols, collapse = ", "))
+  }
+
+  bad_len_cols <- names(insert_df)[vapply(insert_df, length, integer(1)) != n]
+  if (length(bad_len_cols) > 0) {
+    stop("Импорт скрининга: некорректная длина колонок: ", paste(bad_len_cols, collapse = ", "))
+  }
+
   insert_df <- insert_df[!is.na(insert_df$mo_id), , drop = FALSE]
   if (nrow(insert_df) == 0) return(0)
 

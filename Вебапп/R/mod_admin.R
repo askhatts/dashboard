@@ -221,7 +221,10 @@ mod_admin_ui <- function(id) {
             h4("Медорганизации", style = "color: #00e676;"),
             p("Редактируйте координаты, тип, название. Изменения сохраняются в SQL автоматически.",
               style = "color: #6c757d; font-size: 12px;"),
-            DTOutput(ns("table_mo_edit"))
+            DTOutput(ns("table_mo_edit")),
+            actionButton(ns("btn_delete_mo"), "Деактивировать выбранные МО",
+                         icon = icon("trash"), class = "btn-danger btn-sm",
+                         style = "margin-top: 8px;")
           )
         ),
 
@@ -468,6 +471,19 @@ mod_admin_server <- function(id, rv) {
         rv$scr <- load_screening(rv$db_conn)
         showNotification(paste0("Скрининг: импортировано ", n_imported, " записей"),
                         type = "message", duration = 8)
+
+        unmatched_count <- attr(long_data, "unmatched_mo_count") %||% 0L
+        unmatched_names <- attr(long_data, "unmatched_mo_names")
+        if (unmatched_count > 0) {
+          preview <- ""
+          if (!is.null(unmatched_names) && length(unmatched_names) > 0) {
+            preview <- paste0(" Примеры: ", paste(utils::head(unmatched_names, 3), collapse = "; "))
+          }
+          showNotification(
+            paste0("Не сопоставлено МО строк: ", unmatched_count, ". Эти строки пропущены.", preview),
+            type = "warning", duration = 12
+          )
+        }
       }, error = function(e) {
         showNotification(paste("Ошибка импорта скрининга:", e$message),
                         type = "error", duration = 10)
@@ -888,6 +904,7 @@ mod_admin_server <- function(id, rv) {
                               "latitude", "longitude", "district_name_ru")]
       datatable(display_df,
         editable = list(target = "cell", disable = list(columns = c(0, 6))),
+        selection = "multiple",
         options  = list(scrollX = TRUE, pageLength = 15),
         rownames = FALSE,
         colnames = c("ID", "Название МО", "Тип", "Форма собст.", "Широта", "Долгота", "Район")
@@ -918,6 +935,40 @@ mod_admin_server <- function(id, rv) {
       }, error = function(e) {
         showNotification(paste("Ошибка обновления МО:", e$message), type = "error")
       })
+    })
+
+    observeEvent(input$btn_delete_mo, {
+      sel <- input$table_mo_edit_rows_selected
+      if (is.null(sel) || length(sel) == 0) {
+        showNotification("Выберите МО для деактивации", type = "warning")
+        return()
+      }
+
+      showModal(modalDialog(
+        title = "Подтверждение",
+        p(paste0("Деактивировать ", length(sel), " выбранных МО?")),
+        footer = tagList(
+          modalButton("Отмена"),
+          actionButton(ns("btn_confirm_delete_mo"), "Деактивировать", class = "btn-danger")
+        ),
+        easyClose = TRUE
+      ))
+    })
+
+    observeEvent(input$btn_confirm_delete_mo, {
+      removeModal()
+      sel <- input$table_mo_edit_rows_selected
+      mo <- rv$mo
+      if (!is.null(sel) && length(sel) > 0 && !is.null(mo) && nrow(mo) > 0) {
+        ids_to_deactivate <- mo$mo_id[sel]
+        tryCatch({
+          deactivate_mo_rows(rv$db_conn, ids_to_deactivate)
+          rv$mo <- load_mo(rv$db_conn)
+          showNotification(paste0("Деактивировано ", length(ids_to_deactivate), " МО"), type = "message")
+        }, error = function(e) {
+          showNotification(paste("Ошибка деактивации МО:", e$message), type = "error")
+        })
+      }
     })
 
     # ============================================
