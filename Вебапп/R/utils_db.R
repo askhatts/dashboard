@@ -160,14 +160,15 @@ delete_epi_rows <- function(conn, epi_ids) {
 insert_epi_from_import <- function(conn, long_data) {
   if (is.null(long_data) || nrow(long_data) == 0) return(0)
   batch_id <- paste0("epi_", format(Sys.time(), "%Y%m%d_%H%M%S"))
+  n <- nrow(long_data)
   insert_df <- data.frame(
-    district_id     = long_data$entity_id,
-    data_year       = long_data$year,
-    data_month      = long_data$month,
-    indicator       = long_data$indicator,
-    value           = long_data$value,
-    import_date     = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-    import_batch_id = batch_id,
+    district_id     = as.integer(long_data$entity_id),
+    data_year       = as.integer(long_data$year),
+    data_month      = as.integer(long_data$month),
+    indicator       = as.character(long_data$indicator),
+    value           = as.numeric(long_data$value),
+    import_date     = rep(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), n),
+    import_batch_id = rep(batch_id, n),
     stringsAsFactors = FALSE
   )
   insert_df <- insert_df[!is.na(insert_df$district_id), , drop = FALSE]
@@ -211,15 +212,18 @@ delete_scr_rows <- function(conn, scr_ids) {
 insert_scr_from_import <- function(conn, long_data, screening_type = "") {
   if (is.null(long_data) || nrow(long_data) == 0) return(0)
   batch_id <- paste0("scr_", format(Sys.time(), "%Y%m%d_%H%M%S"))
+  n <- nrow(long_data)
+
+  # Принудительно приводим все столбцы к простым атомарным векторам
   insert_df <- data.frame(
-    mo_id           = long_data$entity_id,
-    data_year       = long_data$year,
-    data_month      = long_data$month,
-    screening_type  = screening_type,
-    indicator       = long_data$indicator,
-    value           = long_data$value,
-    import_date     = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-    import_batch_id = batch_id,
+    mo_id           = as.integer(long_data$entity_id),
+    data_year       = as.integer(long_data$year),
+    data_month      = as.integer(long_data$month),
+    screening_type  = rep(as.character(screening_type), n),
+    indicator       = as.character(long_data$indicator),
+    value           = as.numeric(long_data$value),
+    import_date     = rep(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), n),
+    import_batch_id = rep(batch_id, n),
     stringsAsFactors = FALSE
   )
   insert_df <- insert_df[!is.na(insert_df$mo_id), , drop = FALSE]
@@ -245,6 +249,24 @@ update_mo_field <- function(conn, mo_id, field, value) {
   sql <- paste0("UPDATE medical_organizations SET ", field, " = ?, updated_at = CURRENT_TIMESTAMP WHERE mo_id = ?")
   DBI::dbExecute(conn, sql, params = list(value, mo_id))
   TRUE
+}
+
+add_mo <- function(conn, mo_name, mo_type, latitude, longitude, district_id) {
+  normalized <- tolower(gsub("[^[:alnum:]]", "", mo_name))
+  DBI::dbExecute(conn, "
+    INSERT INTO medical_organizations (mo_name, mo_short_name, mo_name_normalized,
+                                        mo_type, latitude, longitude, active)
+    VALUES (?, ?, ?, ?, ?, ?, 1)
+  ", params = list(mo_name, mo_name, normalized, mo_type, latitude, longitude))
+  # Получаем ID новой МО
+  new_id <- DBI::dbGetQuery(conn, "SELECT last_insert_rowid() AS id")$id
+  # Связываем с районом
+  if (!is.na(district_id) && district_id > 0) {
+    DBI::dbExecute(conn, "
+      INSERT INTO mo_district_link (mo_id, district_id, is_primary) VALUES (?, ?, 1)
+    ", params = list(new_id, district_id))
+  }
+  new_id
 }
 
 # === ЛОГИРОВАНИЕ ИМПОРТА ===

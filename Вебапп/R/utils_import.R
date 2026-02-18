@@ -139,9 +139,23 @@ is_patient_level_format <- function(col_names) {
   any(sapply(patient_markers, function(p) any(grepl(p, cn))))
 }
 
+# === НОРМАЛИЗАЦИЯ НАЗВАНИЙ МО ИЗ EXCEL (с подчёркиваниями) ===
+# Заменяет подчёркивания на пробелы, убирает лишние пробелы
+normalize_mo_excel_name <- function(name) {
+  n <- gsub("_", " ", as.character(name))
+  n <- gsub("\\s+", " ", trimws(n))
+  n
+}
+
 # === ПАРСИНГ ПАЦИЕНТСКОГО ФОРМАТА СКРИНИНГА ===
 # Принимает per-patient Excel (каждая строка = один пациент),
-# агрегирует по МО + год + месяц, возвращает длинный формат.
+# агрегирует по МО + год + месяц.
+# Показатели:
+#   - Всего_случаев (count per MO)
+#   - Медиана_возраст (если есть колонка "Возраст")
+#   - Медиана_дней_до_завершения (Дата_окончания - Дата_начала)
+#   - Доля_просроченных_% (Дата_окончания > Планируемая_дата_завершения)
+#   - Все остальные числовые колонки — SUM
 parse_patient_level_screening <- function(data, reference_mo,
                                            scr_type_prefix = "",
                                            year_override = NULL,
@@ -149,11 +163,11 @@ parse_patient_level_screening <- function(data, reference_mo,
   if (is.null(data) || nrow(data) == 0) stop("Входные данные пусты")
 
   cn <- tolower(names(data))
+  orig_names <- names(data)
 
   # Шаг 1: Определяем колонку МО
   mo_col_idx <- which(grepl("мо_начавш|мо_начав|^мо$|организац|начавш", cn))
   if (length(mo_col_idx) == 0) {
-    # Ищем первую текстовую колонку как запасной вариант
     text_cols <- which(sapply(data, is.character) | sapply(data, is.factor))
     if (length(text_cols) > 0) {
       mo_col_idx <- text_cols[1]
@@ -161,57 +175,70 @@ parse_patient_level_screening <- function(data, reference_mo,
       stop("Не найдена колонка МО")
     }
   }
-  mo_col <- names(data)[mo_col_idx[1]]
+  mo_col <- orig_names[mo_col_idx[1]]
 
-  # Шаг 2: Определяем колонку даты
-  date_col_idx <- which(grepl("дата_начала|дата.*начал|start_date|^дата$", cn))
-  date_col <- if (length(date_col_idx) > 0) names(data)[date_col_idx[1]] else NULL
+  # Шаг 2: Определяем колонки дат
+  date_start_idx <- which(grepl("дата_начала|дата.*начал|start_date|^дата$", cn))
+  date_start_col <- if (length(date_start_idx) > 0) orig_names[date_start_idx[1]] else NULL
 
-  # Шаг 3: Определяем колонку mo_id (прямое сопоставление)
+  date_end_idx <- which(grepl("дата_окончания|дата.*оконч|end_date|дата_конца", cn))
+  date_end_col <- if (length(date_end_idx) > 0) orig_names[date_end_idx[1]] else NULL
+
+  date_planned_idx <- which(grepl("планируем.*дат|планир.*заверш|planned.*date", cn))
+  date_planned_col <- if (length(date_planned_idx) > 0) orig_names[date_planned_idx[1]] else NULL
+
+  # Шаг 3: Определяем колонку возраста
+  age_col_idx <- which(grepl("^возраст$|^age$", cn))
+  age_col <- if (length(age_col_idx) > 0) orig_names[age_col_idx[1]] else NULL
+
+  # Шаг 4: Определяем колонку mo_id
   mo_id_col_idx <- which(grepl("^mo_id$|^id_мо$|^мо_id$", cn))
-  mo_id_col <- if (length(mo_id_col_idx) > 0) names(data)[mo_id_col_idx[1]] else NULL
+  mo_id_col <- if (length(mo_id_col_idx) > 0) orig_names[mo_id_col_idx[1]] else NULL
 
-  # Шаг 4: Определяем метаданные (исключаем из агрегации)
+  # Шаг 5: Мета-колонки (не агрегируются как SUM)
   metadata_patterns <- paste0(
     "фио|иин|iin|^пол$|пол$|возраст|age|gender|участок|дата|планируем|",
     "фамил|имя|отчеств|name|area|прикрепл|статус"
   )
   metadata_idx <- which(grepl(metadata_patterns, cn))
-  metadata_cols <- names(data)[metadata_idx]
+  metadata_cols <- orig_names[metadata_idx]
   metadata_cols <- union(metadata_cols, mo_col)
-  if (!is.null(date_col)) metadata_cols <- union(metadata_cols, date_col)
+  if (!is.null(date_start_col)) metadata_cols <- union(metadata_cols, date_start_col)
+  if (!is.null(date_end_col)) metadata_cols <- union(metadata_cols, date_end_col)
+  if (!is.null(date_planned_col)) metadata_cols <- union(metadata_cols, date_planned_col)
   if (!is.null(mo_id_col)) metadata_cols <- union(metadata_cols, mo_id_col)
+  if (!is.null(age_col)) metadata_cols <- union(metadata_cols, age_col)
 
-  # Шаг 5: Оставшиеся колонки = показатели
-  all_cols <- names(data)
-  potential_indicator_cols <- setdiff(all_cols, metadata_cols)
-
-  # Приводим потенциальные числовые колонки
+  # Шаг 6: Оставшиеся числовые колонки → SUM-показатели
+  potential_indicator_cols <- setdiff(orig_names, metadata_cols)
   for (col in potential_indicator_cols) {
     vals <- suppressWarnings(as.numeric(data[[col]]))
     if (sum(!is.na(vals)) > 0) {
       data[[col]] <- vals
     }
   }
-
   indicator_cols <- potential_indicator_cols[
     sapply(data[potential_indicator_cols], function(x) is.numeric(x) || is.integer(x))
   ]
-
-  if (length(indicator_cols) == 0) {
-    stop("Не найдены числовые колонки-показатели")
-  }
-
-  # Обнуляем NA в показателях
   for (col in indicator_cols) {
     data[[col]][is.na(data[[col]])] <- 0
   }
 
-  # Шаг 6: Извлекаем год/месяц из даты
-  if (!is.null(date_col)) {
-    dates <- tryCatch(as.Date(data[[date_col]]), error = function(e) rep(NA, nrow(data)))
-    data$`.year` <- as.integer(format(dates, "%Y"))
-    data$`.month` <- as.integer(format(dates, "%m"))
+  # Шаг 7: Парсинг дат
+  if (!is.null(date_start_col)) {
+    data$`.date_start` <- tryCatch(as.Date(data[[date_start_col]]), error = function(e) rep(NA, nrow(data)))
+  }
+  if (!is.null(date_end_col)) {
+    data$`.date_end` <- tryCatch(as.Date(data[[date_end_col]]), error = function(e) rep(NA, nrow(data)))
+  }
+  if (!is.null(date_planned_col)) {
+    data$`.date_planned` <- tryCatch(as.Date(data[[date_planned_col]]), error = function(e) rep(NA, nrow(data)))
+  }
+
+  # Шаг 8: Извлекаем год/месяц
+  if (!is.null(date_start_col) && ".date_start" %in% names(data)) {
+    data$`.year` <- as.integer(format(data$`.date_start`, "%Y"))
+    data$`.month` <- as.integer(format(data$`.date_start`, "%m"))
     data$`.year`[is.na(data$`.year`)] <- year_override %||% as.integer(format(Sys.Date(), "%Y"))
     data$`.month`[is.na(data$`.month`)] <- month_override %||% NA_integer_
   } else {
@@ -219,50 +246,93 @@ parse_patient_level_screening <- function(data, reference_mo,
     data$`.month` <- rep(month_override %||% NA_integer_, nrow(data))
   }
 
-  # Шаг 7: Сопоставление МО → mo_id
+  # Шаг 9: Сопоставление МО → mo_id (с нормализацией подчёркиваний)
   if (!is.null(mo_id_col)) {
     data$`.mo_id` <- suppressWarnings(as.integer(data[[mo_id_col]]))
   } else {
-    mo_names_unique <- unique(as.character(data[[mo_col]]))
-    mo_matches <- match_mo_names(mo_names_unique, reference_mo)
-    # Создаём lookup таблицу
-    lookup <- setNames(mo_matches$matched_mo_id, mo_names_unique)
-    data$`.mo_id` <- lookup[as.character(data[[mo_col]])]
+    # Нормализуем имена МО: "_" → " "
+    raw_mo_names <- as.character(data[[mo_col]])
+    clean_mo_names <- sapply(raw_mo_names, normalize_mo_excel_name, USE.NAMES = FALSE)
+    unique_clean <- unique(clean_mo_names)
+    mo_matches <- match_mo_names(unique_clean, reference_mo)
+    lookup <- setNames(mo_matches$matched_mo_id, unique_clean)
+    data$`.mo_id` <- lookup[clean_mo_names]
   }
 
-  # Шаг 8: Агрегируем по МО + год + месяц
-  agg_data <- data %>%
-    dplyr::filter(!is.na(`.mo_id`)) %>%
+  # Шаг 10: Фильтруем строки без МО
+  data <- data[!is.na(data$`.mo_id`), , drop = FALSE]
+  if (nrow(data) == 0) stop("Не удалось сопоставить ни одну МО")
+
+  # Шаг 11: Агрегируем по МО + год + месяц
+  results <- list()
+
+  # 11a: Всего случаев (count)
+  count_data <- data %>%
     dplyr::group_by(`.mo_id`, `.year`, `.month`) %>%
-    dplyr::summarise(
-      dplyr::across(dplyr::all_of(indicator_cols), ~sum(.x, na.rm = TRUE)),
-      .groups = "drop"
-    )
+    dplyr::summarise(value = dplyr::n(), .groups = "drop") %>%
+    dplyr::mutate(indicator = "Всего_случаев")
+  results[[length(results) + 1]] <- count_data
 
-  # Шаг 9: Добавляем префикс типа скрининга к названиям показателей
-  if (nchar(scr_type_prefix) > 0) {
-    new_names <- paste0(scr_type_prefix, " - ", indicator_cols)
-    rename_map <- setNames(indicator_cols, new_names)
-  } else {
-    rename_map <- NULL
+  # 11b: Медиана возраста
+  if (!is.null(age_col)) {
+    age_vals <- suppressWarnings(as.numeric(data[[age_col]]))
+    data$`.age` <- age_vals
+    age_data <- data %>%
+      dplyr::filter(!is.na(`.age`)) %>%
+      dplyr::group_by(`.mo_id`, `.year`, `.month`) %>%
+      dplyr::summarise(value = median(`.age`, na.rm = TRUE), .groups = "drop") %>%
+      dplyr::mutate(indicator = "Медиана_возраст")
+    results[[length(results) + 1]] <- age_data
   }
 
-  # Шаг 10: Pivot в длинный формат
-  long_data <- agg_data %>%
-    tidyr::pivot_longer(
-      cols = dplyr::all_of(indicator_cols),
-      names_to = "indicator",
-      values_to = "value"
-    ) %>%
-    dplyr::filter(!is.na(value) & value != 0) %>%
-    dplyr::rename(
-      entity_id = `.mo_id`,
-      year = `.year`,
-      month = `.month`
-    ) %>%
-    dplyr::mutate(import_date = Sys.time())
+  # 11c: Медиана дней до завершения (Дата_окончания - Дата_начала)
+  if (".date_start" %in% names(data) && ".date_end" %in% names(data)) {
+    data$`.days_to_end` <- as.numeric(difftime(data$`.date_end`, data$`.date_start`, units = "days"))
+    days_data <- data %>%
+      dplyr::filter(!is.na(`.days_to_end`) & `.days_to_end` >= 0) %>%
+      dplyr::group_by(`.mo_id`, `.year`, `.month`) %>%
+      dplyr::summarise(value = median(`.days_to_end`, na.rm = TRUE), .groups = "drop") %>%
+      dplyr::mutate(indicator = "Медиана_дней_до_завершения")
+    results[[length(results) + 1]] <- days_data
+  }
 
-  # Добавляем префикс
+  # 11d: Доля просроченных (Дата_окончания > Планируемая_дата_завершения)
+  if (".date_end" %in% names(data) && ".date_planned" %in% names(data)) {
+    delay_data <- data %>%
+      dplyr::filter(!is.na(`.date_end`) & !is.na(`.date_planned`)) %>%
+      dplyr::group_by(`.mo_id`, `.year`, `.month`) %>%
+      dplyr::summarise(
+        value = round(sum(`.date_end` > `.date_planned`, na.rm = TRUE) / dplyr::n() * 100, 1),
+        .groups = "drop"
+      ) %>%
+      dplyr::mutate(indicator = "Доля_просроченных_%")
+    results[[length(results) + 1]] <- delay_data
+  }
+
+  # 11e: SUM-показатели (остальные числовые колонки)
+  if (length(indicator_cols) > 0) {
+    sum_agg <- data %>%
+      dplyr::group_by(`.mo_id`, `.year`, `.month`) %>%
+      dplyr::summarise(
+        dplyr::across(dplyr::all_of(indicator_cols), ~sum(.x, na.rm = TRUE)),
+        .groups = "drop"
+      )
+    sum_long <- sum_agg %>%
+      tidyr::pivot_longer(
+        cols = dplyr::all_of(indicator_cols),
+        names_to = "indicator",
+        values_to = "value"
+      ) %>%
+      dplyr::filter(!is.na(value) & value != 0)
+    results[[length(results) + 1]] <- sum_long
+  }
+
+  # Шаг 12: Объединяем все результаты
+  long_data <- dplyr::bind_rows(results) %>%
+    dplyr::rename(entity_id = `.mo_id`, year = `.year`, month = `.month`) %>%
+    dplyr::mutate(import_date = format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
+
+  # Добавляем префикс типа скрининга
   if (nchar(scr_type_prefix) > 0) {
     long_data$indicator <- paste0(scr_type_prefix, " - ", long_data$indicator)
   }

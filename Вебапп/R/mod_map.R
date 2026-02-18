@@ -89,47 +89,47 @@ mod_map_server <- function(id, rv) {
       return(d)
     })
 
-    # === РЕАКТИВНЫЕ ДАННЫЕ ДЛЯ КРУГОВ МО ===
-    # Вычисляет значения показателя Б для каждой МО.
-    # МО без данных скрининга НЕ отображаются (inner_join).
-    mo_map_data <- reactive({
-      req(rv$mo, rv$indicator_b)
-
+    # === РЕАКТИВНЫЕ ДАННЫЕ ДЛЯ МО ===
+    # Все МО с координатами (для иконок).
+    all_mo_data <- reactive({
       m <- rv$mo
+      if (is.null(m) || nrow(m) == 0) return(NULL)
+      m %>% filter(!is.na(latitude) & !is.na(longitude))
+    })
 
+    # Данные скрининга по МО (для кругов поверх иконок).
+    mo_map_data <- reactive({
+      m <- rv$mo
       if (is.null(m) || nrow(m) == 0) return(NULL)
 
       scr <- rv$scr
+      ind_b <- rv$indicator_b
 
-      # Если данных скрининга нет — не показываем МО вообще
-      if (is.null(scr) || nrow(scr) == 0 || rv$indicator_b == "") {
+      if (is.null(scr) || nrow(scr) == 0 || is.null(ind_b) || ind_b == "") {
         return(NULL)
       }
 
-      # Фильтруем по выбранному показателю
-      scr_filtered <- scr %>%
-        filter(indicator == rv$indicator_b)
+      scr_filtered <- scr %>% filter(indicator == ind_b)
 
-      # Если выбран конкретный период — фильтруем по нему
       sel_period <- rv$selected_period_b
       if (!is.null(sel_period)) {
         scr_filtered <- scr_filtered %>%
           filter(year == sel_period$year, month == sel_period$month)
       }
 
-      # Суммируем по МО
       scr_agg <- scr_filtered %>%
         group_by(mo_id) %>%
         summarise(value = sum(value, na.rm = TRUE), .groups = "drop") %>%
-        filter(value > 0)  # Только МО с ненулевыми данными
+        filter(value > 0)
 
       if (nrow(scr_agg) == 0) return(NULL)
 
-      # inner_join — только МО с данными по выбранному показателю
       m <- m %>%
-        inner_join(scr_agg, by = "mo_id")
+        inner_join(scr_agg, by = "mo_id") %>%
+        filter(!is.na(latitude) & !is.na(longitude))
 
-      # Вычисляем квартили и размеры кругов
+      if (nrow(m) == 0) return(NULL)
+
       breaks <- compute_quartile_breaks(m$value)
       m$quartile <- assign_quartile_class(m$value, breaks)
       m$radius <- MO_CIRCLE_SIZES[m$quartile]
@@ -202,69 +202,92 @@ mod_map_server <- function(id, rv) {
         )
     })
 
-    # === ОБНОВЛЕНИЕ СЛОЯ МО (пропорциональные символы) ===
-    # Срабатывает при изменении показателя Б или данных скрининга.
-    # МО без данных скрининга НЕ отображаются.
+    # === ОБНОВЛЕНИЕ СЛОЯ МО ===
+    # Иконки больниц для ВСЕХ МО с координатами.
+    # Круги поверх для МО с данными скрининга (размер по квартилям).
     observe({
-      data <- mo_map_data()
+      all_mo <- all_mo_data()
 
-      # Если данных нет — очищаем слой и легенду
-      if (is.null(data) || nrow(data) == 0) {
-        leafletProxy(ns("map")) %>%
-          clearGroup("Медорганизации") %>%
-          removeControl("legend_mo")
-        return()
-      }
+      proxy <- leafletProxy(ns("map")) %>%
+        clearGroup("Медорганизации") %>%
+        removeControl("legend_mo")
 
-      # Фильтруем МО без координат
-      data <- data %>% filter(!is.na(latitude) & !is.na(longitude))
-      if (nrow(data) == 0) {
-        leafletProxy(ns("map")) %>%
-          clearGroup("Медорганизации") %>%
-          removeControl("legend_mo")
-        return()
-      }
+      # Если нет МО — выходим
+      if (is.null(all_mo) || nrow(all_mo) == 0) return()
 
-      # Формируем попапы
-      popups <- paste0(
-        "<div style='font-family:Inter,sans-serif;min-width:200px;'>",
-        "<strong style='color:#ff6b35;font-size:14px;'>", data$mo_short_name, "</strong><br>",
-        "<span style='color:#a0a0a0;font-size:11px;'>", data$mo_type,
-        " (", data$ownership, ")</span><br>",
-        "<span style='color:#6c757d;font-size:11px;'>Район: ", data$district_name_ru, "</span>",
-        "<hr style='border-color:#30305a;margin:6px 0;'>",
-        "<span style='color:#a0a0a0;font-size:11px;'>", rv$indicator_b, ":</span><br>",
-        "<span style='font-size:18px;font-weight:700;color:#ffffff;'>",
-        round(data$value, 1), "</span>",
+      # Иконка больницы (HTML divIcon — маленький крестик)
+      hospital_icon <- makeIcon(
+        iconUrl = NULL,
+        iconWidth = 14, iconHeight = 14
+      )
+
+      # Попапы для всех МО (базовая информация)
+      base_popups <- paste0(
+        "<div style='font-family:Inter,sans-serif;min-width:180px;'>",
+        "<strong style='color:#ff6b35;font-size:14px;'>", all_mo$mo_short_name, "</strong><br>",
+        "<span style='color:#a0a0a0;font-size:11px;'>", all_mo$mo_type,
+        " (", all_mo$ownership, ")</span><br>",
+        "<span style='color:#6c757d;font-size:11px;'>Район: ", all_mo$district_name_ru, "</span>",
         "</div>"
       )
 
-      # HTML-легенда размеров кругов
-      breaks <- compute_quartile_breaks(data$value)
-      size_legend_html <- create_size_legend_html(rv$indicator_b, breaks)
-
-      leafletProxy(ns("map")) %>%
-        clearGroup("Медорганизации") %>%
-        removeControl("legend_mo") %>%
+      # Добавляем маленькие маркеры-крестики для всех МО
+      proxy <- proxy %>%
         addCircleMarkers(
-          data        = data,
+          data        = all_mo,
           group       = "Медорганизации",
           lng         = ~longitude,
           lat         = ~latitude,
-          radius      = ~radius,
-          fillColor   = MO_CIRCLE_COLOR,
-          fillOpacity = 0.85,
-          color       = "#ffffff",
-          weight      = 1.5,
-          popup       = popups,
-          label       = ~paste0(mo_short_name, ": ", round(value, 1)),
+          radius      = 4,
+          fillColor   = "#ffffff",
+          fillOpacity = 0.7,
+          color       = "#ff6b35",
+          weight      = 2,
+          popup       = base_popups,
+          label       = ~mo_short_name,
           layerId     = ~paste0("mo_", mo_id)
-        ) %>%
-        addControl(
-          html     = size_legend_html,
-          position = "topright",
-          layerId  = "legend_mo"
         )
+
+      # Если есть данные скрининга — круги поверх
+      data <- mo_map_data()
+      if (!is.null(data) && nrow(data) > 0) {
+        scr_popups <- paste0(
+          "<div style='font-family:Inter,sans-serif;min-width:200px;'>",
+          "<strong style='color:#ff6b35;font-size:14px;'>", data$mo_short_name, "</strong><br>",
+          "<span style='color:#a0a0a0;font-size:11px;'>", data$mo_type,
+          " (", data$ownership, ")</span><br>",
+          "<span style='color:#6c757d;font-size:11px;'>Район: ", data$district_name_ru, "</span>",
+          "<hr style='border-color:#30305a;margin:6px 0;'>",
+          "<span style='color:#a0a0a0;font-size:11px;'>", rv$indicator_b, ":</span><br>",
+          "<span style='font-size:18px;font-weight:700;color:#ffffff;'>",
+          round(data$value, 1), "</span>",
+          "</div>"
+        )
+
+        breaks <- compute_quartile_breaks(data$value)
+        size_legend_html <- create_size_legend_html(rv$indicator_b, breaks)
+
+        proxy <- proxy %>%
+          addCircleMarkers(
+            data        = data,
+            group       = "Медорганизации",
+            lng         = ~longitude,
+            lat         = ~latitude,
+            radius      = ~radius,
+            fillColor   = MO_CIRCLE_COLOR,
+            fillOpacity = 0.85,
+            color       = "#ffffff",
+            weight      = 1.5,
+            popup       = scr_popups,
+            label       = ~paste0(mo_short_name, ": ", round(value, 1)),
+            layerId     = ~paste0("mo_scr_", mo_id)
+          ) %>%
+          addControl(
+            html     = size_legend_html,
+            position = "topright",
+            layerId  = "legend_mo"
+          )
+      }
     })
 
     # === ОБРАБОТКА КЛИКА ПО РАЙОНУ ===
@@ -278,12 +301,17 @@ mod_map_server <- function(id, rv) {
     })
 
     # === ОБРАБОТКА КЛИКА ПО МО ===
-    # При клике на круг МО — сохраняем его ID в rv
+    # При клике на маркер/круг МО — сохраняем его ID в rv
     # для обновления графика Б (скрининг)
     observeEvent(input$map_marker_click, {
       click <- input$map_marker_click
-      if (!is.null(click$id) && grepl("^mo_", click$id)) {
-        rv$selected_mo_id <- as.integer(gsub("mo_", "", click$id))
+      if (!is.null(click$id)) {
+        # Обрабатываем оба формата: "mo_123" и "mo_scr_123"
+        if (grepl("^mo_scr_", click$id)) {
+          rv$selected_mo_id <- as.integer(gsub("mo_scr_", "", click$id))
+        } else if (grepl("^mo_", click$id)) {
+          rv$selected_mo_id <- as.integer(gsub("mo_", "", click$id))
+        }
       }
     })
 

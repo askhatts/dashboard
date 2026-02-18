@@ -155,11 +155,30 @@ mod_admin_ui <- function(id) {
           )
         ),
 
-        # === ВКЛАДКА 3: СКРИНИНГ (редактирование) ===
+        # === ВКЛАДКА 3: СКРИНИНГ (ручной ввод + редактирование) ===
         tabPanel(
           title = "Скрининг",
           icon  = icon("microscope"),
           div(style = "padding-top: 16px;",
+            h4("Ручной ввод данных скрининга", style = "color: #ff6b35;"),
+            fluidRow(
+              column(3, selectInput(ns("scr_mo"), "Медорганизация:", choices = NULL)),
+              column(2, numericInput(ns("scr_year_manual"), "Год:",
+                                     value = as.integer(format(Sys.Date(), "%Y")),
+                                     min = 2020, max = 2035)),
+              column(1, numericInput(ns("scr_month_manual"), "Месяц:",
+                                     value = NA, min = 1, max = 12)),
+              column(2, textInput(ns("scr_indicator"), "Показатель:",
+                                   placeholder = "Начато")),
+              column(2, numericInput(ns("scr_value_manual"), "Значение:", value = NA)),
+              column(2, selectInput(ns("scr_type_manual"), "Тип:",
+                                    choices = c("" = "", "РМЖ" = "РМЖ", "КРР" = "КРР", "РШМ" = "РШМ")))
+            ),
+            actionButton(ns("btn_scr_add"), "Добавить запись",
+                         icon = icon("plus"), class = "btn-success btn-sm"),
+
+            tags$hr(style = "border-color: #30305a;"),
+
             h4("Данные скрининга", style = "color: #ff6b35;"),
             p("Кликните по ячейке для редактирования. Изменения сохраняются в SQL автоматически.",
               style = "color: #6c757d; font-size: 12px;"),
@@ -185,6 +204,20 @@ mod_admin_ui <- function(id) {
           title = "Медорганизации",
           icon  = icon("hospital"),
           div(style = "padding-top: 16px;",
+            h4("Добавить медорганизацию", style = "color: #00e676;"),
+            fluidRow(
+              column(4, textInput(ns("mo_new_name"), "Название МО:",
+                                   placeholder = "КГП на ПХВ 'Поликлиника №1'")),
+              column(2, textInput(ns("mo_new_type"), "Тип:", placeholder = "Поликлиника")),
+              column(2, numericInput(ns("mo_new_lat"), "Широта:", value = NA)),
+              column(2, numericInput(ns("mo_new_lon"), "Долгота:", value = NA)),
+              column(2, selectInput(ns("mo_new_district"), "Район:", choices = NULL))
+            ),
+            actionButton(ns("btn_mo_add"), "Добавить МО",
+                         icon = icon("plus"), class = "btn-success btn-sm"),
+
+            tags$hr(style = "border-color: #30305a;"),
+
             h4("Медорганизации", style = "color: #00e676;"),
             p("Редактируйте координаты, тип, название. Изменения сохраняются в SQL автоматически.",
               style = "color: #6c757d; font-size: 12px;"),
@@ -312,13 +345,22 @@ mod_admin_server <- function(id, rv) {
       shinyjs::hide("admin_panel")
     })
 
-    # === ЗАПОЛНЕНИЕ СПИСКА РАЙОНОВ ДЛЯ РУЧНОГО ВВОДА ===
+    # === ЗАПОЛНЕНИЕ СПИСКОВ ДЛЯ РУЧНОГО ВВОДА ===
     observe({
       d <- rv$districts
       if (!is.null(d) && nrow(d) > 0) {
         df <- sf::st_drop_geometry(d)
         choices <- setNames(df$district_id, df$district_name_ru)
         updateSelectInput(session, "epi_district", choices = choices)
+        updateSelectInput(session, "mo_new_district", choices = choices)
+      }
+    })
+
+    observe({
+      m <- rv$mo
+      if (!is.null(m) && nrow(m) > 0) {
+        choices <- setNames(m$mo_id, m$mo_short_name)
+        updateSelectInput(session, "scr_mo", choices = choices)
       }
     })
 
@@ -415,8 +457,10 @@ mod_admin_server <- function(id, rv) {
           )
         }
 
-        screening_type <- if (is.null(input$scr_type)) "" else input$scr_type
-        n_imported <- insert_scr_from_import(rv$db_conn, long_data, screening_type)
+        # screening_type = "" т.к. префикс уже включён в indicator
+        # (parse_patient_level_screening добавляет его, а load_screening
+        #  конкатенирует screening_type || ' - ' || indicator)
+        n_imported <- insert_scr_from_import(rv$db_conn, long_data, "")
         log_import(rv$db_conn, "screening", input$file_scr$name,
                    nrow(long_data), n_imported, nrow(long_data) - n_imported, "success")
 
@@ -676,6 +720,33 @@ mod_admin_server <- function(id, rv) {
     })
 
     # ============================================
+    # === РУЧНОЙ ВВОД СКРИНИНГА ===
+    # ============================================
+    observeEvent(input$btn_scr_add, {
+      req(input$scr_mo, input$scr_year_manual, input$scr_indicator)
+
+      tryCatch({
+        mo_id_val <- as.integer(input$scr_mo)
+        year_val <- as.integer(input$scr_year_manual)
+        month_val <- if (is.na(input$scr_month_manual)) NA_integer_ else as.integer(input$scr_month_manual)
+        indicator_val <- trimws(input$scr_indicator)
+        value_val <- if (is.na(input$scr_value_manual)) NA_real_ else as.numeric(input$scr_value_manual)
+        scr_type_val <- if (is.null(input$scr_type_manual)) "" else input$scr_type_manual
+
+        if (nchar(indicator_val) == 0) {
+          showNotification("Введите название показателя", type = "warning")
+          return()
+        }
+
+        save_scr_row(rv$db_conn, mo_id_val, year_val, month_val, scr_type_val, indicator_val, value_val)
+        rv$scr <- load_screening(rv$db_conn)
+        showNotification("Запись скрининга добавлена", type = "message", duration = 3)
+      }, error = function(e) {
+        showNotification(paste("Ошибка:", e$message), type = "error", duration = 8)
+      })
+    })
+
+    # ============================================
     # === РЕДАКТИРУЕМАЯ ТАБЛИЦА СКРИНИНГА ===
     # ============================================
 
@@ -773,6 +844,30 @@ mod_admin_server <- function(id, rv) {
         showNotification("Данные скрининга очищены", type = "warning", duration = 5)
       }, error = function(e) {
         showNotification(paste("Ошибка:", e$message), type = "error")
+      })
+    })
+
+    # ============================================
+    # === РУЧНОЙ ВВОД МЕДОРГАНИЗАЦИИ ===
+    # ============================================
+    observeEvent(input$btn_mo_add, {
+      req(input$mo_new_name)
+      tryCatch({
+        mo_name <- trimws(input$mo_new_name)
+        if (nchar(mo_name) == 0) {
+          showNotification("Введите название МО", type = "warning")
+          return()
+        }
+        mo_type <- if (is.null(input$mo_new_type) || trimws(input$mo_new_type) == "") "Поликлиника" else trimws(input$mo_new_type)
+        lat <- if (is.na(input$mo_new_lat)) NA_real_ else as.numeric(input$mo_new_lat)
+        lon <- if (is.na(input$mo_new_lon)) NA_real_ else as.numeric(input$mo_new_lon)
+        dist_id <- as.integer(input$mo_new_district)
+
+        add_mo(rv$db_conn, mo_name, mo_type, lat, lon, dist_id)
+        rv$mo <- load_mo(rv$db_conn)
+        showNotification("Медорганизация добавлена", type = "message", duration = 3)
+      }, error = function(e) {
+        showNotification(paste("Ошибка:", e$message), type = "error", duration = 8)
       })
     })
 

@@ -482,7 +482,16 @@ table.dataTable tbody td {
   border-color: #ff5252;
 }
 
-/* === МОДАЛЬНЫЕ ОКНА (для пароля) === */
+/* === МОДАЛЬНЫЕ ОКНА (для пароля и подтверждений) === */
+/* z-index выше admin-overlay (2000), чтобы модалки были поверх админки */
+.modal {
+  z-index: 2100 !important;
+}
+
+.modal-backdrop {
+  z-index: 2050 !important;
+}
+
 .modal-content {
   background-color: #16213e !important;
   border-color: #30305a !important;
