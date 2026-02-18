@@ -10,11 +10,11 @@
 #   server.R — серверная логика, модули
 #   R/       — модули и утилиты
 #   www/     — CSS, JS (тёмная тема, fullscreen)
-#   data/    — .rds файлы данных, шейпфайлы
+#   data/    — SQLite база (abai_region.sqlite), шейпфайлы
 #
 # Первый запуск:
-#   1. Выполните source("R/setup_database.R") для генерации .rds файлов
-#   2. Затем shiny::runApp(".")
+#   1. source("install_deps.R")  — установка зависимостей
+#   2. shiny::runApp(".")
 #
 # Админ-панель:
 #   Кликните на иконку gear в правом верхнем углу
