@@ -172,7 +172,7 @@ mod_admin_ui <- function(id) {
                                    placeholder = "Начато")),
               column(2, numericInput(ns("scr_value_manual"), "Значение:", value = NA)),
               column(2, selectInput(ns("scr_type_manual"), "Тип:",
-                                    choices = c("" = "", "РМЖ" = "РМЖ", "КРР" = "КРР", "РШМ" = "РШМ")))
+                                    choices = c("Без типа" = "", "РМЖ" = "РМЖ", "КРР" = "КРР", "РШМ" = "РШМ")))
             ),
             actionButton(ns("btn_scr_add"), "Добавить запись",
                          icon = icon("plus"), class = "btn-success btn-sm"),
